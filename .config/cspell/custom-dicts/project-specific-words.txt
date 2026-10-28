@@ -21,6 +21,7 @@ mdlint
 Miarka
 MSBFS
 nerdctl
+ovox
 Pandoc
 pandoc
 pasteable

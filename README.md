@@ -2,7 +2,7 @@
 
 ![Status: Work in Progress](https://img.shields.io/badge/status-work%20in%20progress-yellow)
 
-Open Vox, also known as ovox, is a service for audio and video transcription to text, supporting custom trancription models.
+Open Vox, also known as ovox, is a service for audio and video transcription to text, supporting custom transcription models.
 
 ## Branch Strategy
 
@@ -48,7 +48,7 @@ pytest -v
 
 git add .
 git commit -S -m "<commit-message>"
-git push -u origin <branchname>
+git push -u origin <branch name>
 
 # Create PR
 ```
