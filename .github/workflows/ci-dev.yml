@@ -1,0 +1,49 @@
+name: ci-dev
+
+on:
+  push:
+    # Any branch except main counts as a feature branch.
+    branches-ignore:
+      - main
+    # Skip the run when README.md is the only file changed.
+    paths-ignore:
+      - README.md
+  workflow_dispatch:
+
+# Cancel an in-progress run when a newer commit lands on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: uv sync --locked --python 3.14 --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format check
+        run: uv run ruff format --check src tests
+
+      - name: Mypy
+        run: uv run mypy
+
+      - name: Pytest
+        run: uv run pytest --cov --cov-report=term-missing
