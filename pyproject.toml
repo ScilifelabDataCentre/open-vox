@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "open-vox"
+version = "0.1.0"  # Keep in sync with src/ovox/__init__.py (checked by tests/test_version.py)
+description = "Open Vox (ovox): audio and video transcription to text, with support for custom transcription models."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "TODO" },
+]
+keywords = ["transcription", "speech-to-text", "asr", "audio", "video", "ovox"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+]
+
+[project.scripts]
+ovox = "ovox.cli:main"
+
+# --- Build -------------------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ovox"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/ovox", "tests", "README.md", "LICENSE"]
+
+# --- Testing -----------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["ovox"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+# --- Linting & formatting ----------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --- Type checking -----------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src/ovox"]
