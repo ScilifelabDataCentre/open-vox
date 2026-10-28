@@ -4,7 +4,6 @@
 
 Open Vox, also known as ovox, is a service for audio and video transcription to text, supporting custom trancription models.
 
-
 ## Branch Strategy
 
 This repository used trunk-based development, meaning we skip a development branch.
