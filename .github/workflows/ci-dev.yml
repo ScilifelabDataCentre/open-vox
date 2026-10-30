@@ -34,7 +34,7 @@ jobs:
           enable-cache: true
 
       - name: Install Python and dependencies
-        run: uv sync --locked --python 3.14 --extra dev
+        run: uv sync --locked
 
       - name: Ruff lint
         run: uv run ruff check src tests

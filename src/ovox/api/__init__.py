@@ -19,7 +19,7 @@ class STTClient:
         model: str | None = None,
     ) -> None:
 
-        """Initialize the STT client.
+        """Initialise the STT client.
 
         Args:
             endpoint: The STT API endpoint URL. If not provided, uses the configured value.
