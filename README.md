@@ -53,6 +53,8 @@ git checkout -b AIS-<nr>-<branch-task>
 
 # ... do work ...
 
+# format
+ruff format .    # rewrites files in place
 # lint
 ruff check .
 

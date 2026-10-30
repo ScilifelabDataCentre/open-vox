@@ -18,7 +18,6 @@ class STTClient:
         api_key: str | None = None,
         model: str | None = None,
     ) -> None:
-
         """Initialise the STT client.
 
         Args:
@@ -63,13 +62,12 @@ class STTClient:
             # For OpenAI-compatible APIs, we can use the models endpoint
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
             }
 
             # Try to get models list (a cheap authenticated call)
             response = await self.client.get(
-                f"{self.endpoint.rsplit('/audio/transcriptions', 1)[0]}/models",
-                headers=headers
+                f"{self.endpoint.rsplit('/audio/transcriptions', 1)[0]}/models", headers=headers
             )
 
             # Raises httpx.HTTPStatusError for any non-2xx status, handled below.
@@ -78,20 +76,20 @@ class STTClient:
             return {
                 "success": True,
                 "message": "Successfully connected to STT API",
-                "status_code": response.status_code
+                "status_code": response.status_code,
             }
 
         except httpx.TimeoutException:
             return {
                 "success": False,
                 "message": "Connection timed out. Check your network and API endpoint.",
-                "error": "timeout"
+                "error": "timeout",
             }
         except httpx.ConnectError:
             return {
                 "success": False,
                 "message": "Could not connect to the API endpoint. Check the URL and your network.",
-                "error": "connection_error"
+                "error": "connection_error",
             }
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
@@ -99,28 +97,24 @@ class STTClient:
                     "success": False,
                     "message": "Authentication failed. Check your API key.",
                     "status_code": e.response.status_code,
-                    "error": "unauthorized"
+                    "error": "unauthorized",
                 }
             elif e.response.status_code == 404:
                 return {
                     "success": False,
                     "message": "API endpoint not found. Check the URL.",
                     "status_code": e.response.status_code,
-                    "error": "not_found"
+                    "error": "not_found",
                 }
             else:
                 return {
                     "success": False,
                     "message": f"API returned error: {e.response.status_code}",
                     "status_code": e.response.status_code,
-                    "error": e.response.text
+                    "error": e.response.text,
                 }
         except Exception as e:
-            return {
-                "success": False,
-                "message": f"Unexpected error: {e!s}",
-                "error": str(e)
-            }
+            return {"success": False, "message": f"Unexpected error: {e!s}", "error": str(e)}
 
     async def transcribe(self, audio_data: bytes, **kwargs) -> dict[str, Any]:
         """Transcribe audio data.

@@ -15,6 +15,7 @@ def test_build_parser_has_check_command():
     check_parser = parser._subparsers._group_actions[0].choices["check"]
     assert "STT API is reachable and credentials are valid" in check_parser.description
 
+
 def test_check_command_success(capsys, stt_env):
     """Test the check command with a successful API connection."""
     # Mock the STTClient.check_connection method to return success
@@ -28,14 +29,14 @@ def test_check_command_success(capsys, stt_env):
         mock_client.check_connection.return_value = {
             "success": True,
             "message": "Successfully connected to STT API",
-            "status_code": 200
+            "status_code": 200,
         }
 
         # Run the main function with the check command
-        with patch.dict("os.environ", {
-            "STT_ENDPOINT": stt_env["STT_ENDPOINT"],
-            "STT_API_KEY": stt_env["STT_API_KEY"]
-        }):
+        with patch.dict(
+            "os.environ",
+            {"STT_ENDPOINT": stt_env["STT_ENDPOINT"], "STT_API_KEY": stt_env["STT_API_KEY"]},
+        ):
             result = main(["check"])
 
         # Assert the result
@@ -47,6 +48,7 @@ def test_check_command_success(capsys, stt_env):
 
         # Assert the mock was called
         mock_client.check_connection.assert_called_once()
+
 
 def test_check_command_failure(capsys, stt_env):
     """Test the check command with a failed API connection."""
@@ -62,14 +64,13 @@ def test_check_command_failure(capsys, stt_env):
             "success": False,
             "message": "Authentication failed. Check your API key.",
             "status_code": 401,
-            "error": "unauthorized"
+            "error": "unauthorized",
         }
 
         # Run the main function with the check command
-        with patch.dict("os.environ", {
-            "STT_ENDPOINT": stt_env["STT_ENDPOINT"],
-            "STT_API_KEY": "invalid-key"
-        }):
+        with patch.dict(
+            "os.environ", {"STT_ENDPOINT": stt_env["STT_ENDPOINT"], "STT_API_KEY": "invalid-key"}
+        ):
             result = main(["check"])
 
         # Assert the result
@@ -81,6 +82,7 @@ def test_check_command_failure(capsys, stt_env):
 
         # Assert the mock was called
         mock_client.check_connection.assert_called_once()
+
 
 def test_check_command_json_output(capsys, stt_env):
     """Test the check command with JSON output format."""
@@ -95,14 +97,14 @@ def test_check_command_json_output(capsys, stt_env):
         mock_client.check_connection.return_value = {
             "success": True,
             "message": "Successfully connected to STT API",
-            "status_code": 200
+            "status_code": 200,
         }
 
         # Run the main function with the check command and --json flag
-        with patch.dict("os.environ", {
-            "STT_ENDPOINT": stt_env["STT_ENDPOINT"],
-            "STT_API_KEY": stt_env["STT_API_KEY"]
-        }):
+        with patch.dict(
+            "os.environ",
+            {"STT_ENDPOINT": stt_env["STT_ENDPOINT"], "STT_API_KEY": stt_env["STT_API_KEY"]},
+        ):
             result = main(["check", "--json"])
 
         # Assert the result
@@ -110,9 +112,9 @@ def test_check_command_json_output(capsys, stt_env):
 
         # Capture the output
         captured = capsys.readouterr()
-        assert "\"success\": true" in captured.out
-        assert "\"message\": \"Successfully connected to STT API\"" in captured.out
-        assert "\"status_code\": 200" in captured.out
+        assert '"success": true' in captured.out
+        assert '"message": "Successfully connected to STT API"' in captured.out
+        assert '"status_code": 200' in captured.out
 
         # Assert the mock was called
         mock_client.check_connection.assert_called_once()

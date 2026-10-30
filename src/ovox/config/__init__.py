@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+
 def _get_env_var(name: str, default: str | None = None) -> str:
     """Get an environment variable, raising an error if not found (unless default provided)."""
     value = os.getenv(name, default)
@@ -21,6 +22,7 @@ def _get_env_var(name: str, default: str | None = None) -> str:
 def _get_optional_env_var(name: str, default: str | None = None) -> str | None:
     """Get an optional environment variable."""
     return os.getenv(name, default)
+
 
 @dataclass
 class Config:
