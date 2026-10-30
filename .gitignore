@@ -53,8 +53,24 @@ litellm.env
 *.env
 !*.env.example
 
-# pyenv
-.python-version
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output
+build/
+dist/
+*.egg-info/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
 
 # Local artefacts that are built or downloaded rather than committed.
 *.tar
