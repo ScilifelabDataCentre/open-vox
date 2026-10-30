@@ -11,6 +11,7 @@ Bitwarden
 citability
 Distributables
 Dockerfiles
+ffprobe
 Figshare
 jsquery
 Kivy
@@ -31,5 +32,7 @@ RACI
 RORID
 sarif
 trivy
+voxtral
+Voxtral
 Zenodo
 ZSON

@@ -12,6 +12,7 @@ New commands (e.g. ``transcribe``) are added as subcommands in
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import platform
 import sys
@@ -64,6 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     version_parser.set_defaults(handler=_cmd_version)
 
+    # Add check command
+    check_parser = subparsers.add_parser(
+        "check",
+        help="check STT API connection and authentication",
+        description="Check if the STT API is reachable and credentials are valid.",
+    )
+    check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print result as JSON",
+    )
+    check_parser.set_defaults(handler=_cmd_check)
+
     return parser
 
 
@@ -76,6 +90,34 @@ def _cmd_version(args: argparse.Namespace) -> int:
         for key, value in info.items():
             print(f"{key:<{width}}  {value}")
     return 0
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    """Handle the check command to verify STT API connection and authentication.
+
+    Args:
+        args: The parsed command line arguments.
+
+    Returns:
+        An integer exit code (0 for success, non-zero for failure).
+    """
+
+    # Import here to avoid circular imports
+    from ovox.api import STTClient
+
+    async def _check_async():
+        async with STTClient() as client:
+            result = await client.check_connection()
+
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(result["message"])
+
+            return 0 if result["success"] else 1
+
+    # Run the async check function
+    return asyncio.run(_check_async())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
