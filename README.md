@@ -57,6 +57,7 @@ git checkout -b AIS-<nr>-<branch-task>
 ruff format .    # rewrites files in place
 # lint
 ruff check .
+uv run ruff format --check src tests
 # mypy checks
 uv run mypy
 

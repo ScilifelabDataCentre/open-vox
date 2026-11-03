@@ -38,8 +38,10 @@ class STTClient:
         return self
 
     async def __aexit__(
-            self, exc_type: type[BaseException] | None,
-            exc_value: BaseException | None, traceback: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: Any,
     ) -> None:
         await self.close()
 
