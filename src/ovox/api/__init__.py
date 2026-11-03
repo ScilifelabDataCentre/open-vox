@@ -39,7 +39,8 @@ class STTClient:
 
     async def __aexit__(
             self, exc_type: type[BaseException] | None,
-            exc_value: BaseException | None, traceback: Any) -> None:
+            exc_value: BaseException | None, traceback: Any
+    ) -> None:
         await self.close()
 
     async def close(self) -> None:
@@ -135,9 +136,4 @@ class STTClient:
         """
         # This method will be implemented in a later step
         # For now, return a placeholder response with proper typing
-        return {
-            "text": "",
-            "segments": [],
-            "language": "",
-            "duration": 0.0
-        }
+        return {"text": "", "segments": [], "language": "", "duration": 0.0}
