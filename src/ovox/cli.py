@@ -105,7 +105,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     # Import here to avoid circular imports
     from ovox.api import STTClient
 
-    async def _check_async():
+    async def _check_async() -> int:
         async with STTClient() as client:
             result = await client.check_connection()
 
@@ -116,8 +116,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
             return 0 if result["success"] else 1
 
-    # Run the async check function
-    return asyncio.run(_check_async())
+    # Run the async check function and return the exit code
+    exit_code: int = asyncio.run(_check_async())
+    return exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:

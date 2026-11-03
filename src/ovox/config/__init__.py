@@ -40,10 +40,15 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         """Create a Config instance from environment variables."""
+        # Get the optional values with defaults
+        stt_model_val = _get_optional_env_var("STT_MODEL", "whisper-1") or "whisper-1"
+        audio_sample_rate_val = _get_optional_env_var("AUDIO_SAMPLE_RATE", "16000") or "16000"
+        audio_channels_val = _get_optional_env_var("AUDIO_CHANNELS", "1") or "1"
+
         return cls(
             stt_endpoint=_get_env_var("STT_ENDPOINT"),
             stt_api_key=_get_env_var("STT_API_KEY"),
-            stt_model=_get_optional_env_var("STT_MODEL", "whisper-1"),
-            audio_sample_rate=int(_get_optional_env_var("AUDIO_SAMPLE_RATE", "16000")),
-            audio_channels=int(_get_optional_env_var("AUDIO_CHANNELS", "1")),
+            stt_model=stt_model_val,
+            audio_sample_rate=int(audio_sample_rate_val),
+            audio_channels=int(audio_channels_val),
         )

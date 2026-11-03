@@ -29,18 +29,20 @@ class STTClient:
         if endpoint is None or api_key is None or model is None:
             config = Config.from_env()
 
-        self.endpoint = endpoint or config.stt_endpoint
-        self.api_key = api_key or config.stt_api_key
-        self.model = model or config.stt_model
-        self.client = httpx.AsyncClient()
+        self.endpoint: str = endpoint or config.stt_endpoint
+        self.api_key: str = api_key or config.stt_api_key
+        self.model: str = model or config.stt_model
+        self.client: httpx.AsyncClient = httpx.AsyncClient()
 
     async def __aenter__(self) -> STTClient:
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(
+            self, exc_type: type[BaseException] | None,
+            exc_value: BaseException | None, traceback: Any) -> None:
         await self.close()
 
-    async def close(self):
+    async def close(self) -> None:
         """Close the HTTP client."""
         await self.client.aclose()
 
@@ -116,7 +118,7 @@ class STTClient:
         except Exception as e:
             return {"success": False, "message": f"Unexpected error: {e!s}", "error": str(e)}
 
-    async def transcribe(self, audio_data: bytes, **kwargs) -> dict[str, Any]:
+    async def transcribe(self, audio_data: bytes, **kwargs: Any) -> dict[str, Any]:
         """Transcribe audio data.
 
         Args:
@@ -132,4 +134,10 @@ class STTClient:
             The transcription result as a dictionary.
         """
         # This method will be implemented in a later step
-        pass
+        # For now, return a placeholder response with proper typing
+        return {
+            "text": "",
+            "segments": [],
+            "language": "",
+            "duration": 0.0
+        }
