@@ -53,11 +53,12 @@ include = ["src/ovox", "tests", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "asyncio: mark the test as asynchronous",
+    "local_media: runs against files in $OVOX_TEST_MEDIA_DIR (skipped if unset)",
 ]
 
 [tool.coverage.run]

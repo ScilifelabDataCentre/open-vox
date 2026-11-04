@@ -90,6 +90,39 @@ uv.lock records the exact versions installed.
 
 Optionals, --optional, are to be reserved for optional backends that the user can install.
 
+## Testing
+
+The project contains both automated unit and integration tests. These reside under the tests/unit and tests/integration directories respectively.
+
+Unit tests are fast and light and each developer should run them often as part of active development in the git flow as described above.
+Unit tests are also run as part of CI.
+
+To run the unit tests:
+```bash
+pytest tests/unit -v
+```
+
+Integration tests work with real files and are therefore a valuable assurance that it works in a more realistic context.
+
+Integration tests that use media files require the ffmpeg tool.
+
+Install ffmpeg:
+```bash
+sudo apt install ffmpeg
+```
+
+To run the integration tests:
+```bash
+pytest tests/integration -v
+```
+
+You can and should run the integration test against real media files.
+In this example, we have copied some real media files into the ~/media directory.
+The run:
+```bash
+OVOX_TEST_MEDIA_DIR=~/media pytest -m local_media
+```
+
 ## Usage
 
 The first usage of open-vox is as a CLI.
