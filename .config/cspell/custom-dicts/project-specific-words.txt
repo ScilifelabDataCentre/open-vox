@@ -15,6 +15,7 @@ ffprobe
 Figshare
 jsquery
 Kivy
+lavfi
 logfmt
 lycheecache
 lycheeignore

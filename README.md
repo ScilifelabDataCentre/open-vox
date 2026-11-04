@@ -62,7 +62,7 @@ uv run ruff format --check src tests
 uv run mypy
 
 # run tests
-pytest -v
+pytest tests/unit -v
 
 git add .
 git commit -S -m "<commit-message>"

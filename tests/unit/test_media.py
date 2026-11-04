@@ -237,7 +237,7 @@ def test_ffprobe_timeout(media_file: Path, fake_ffprobe: FakeFFprobe) -> None:
         validate_input(media_file)
 
 
-def test_unparseable_ffprobe_output(media_file: Path, fake_ffprobe: FakeFFprobe) -> None:
+def test_unparsable_ffprobe_output(media_file: Path, fake_ffprobe: FakeFFprobe) -> None:
     fake_ffprobe.stdout = "not json"
 
     with pytest.raises(InputValidationError, match="Could not read ffprobe output"):
