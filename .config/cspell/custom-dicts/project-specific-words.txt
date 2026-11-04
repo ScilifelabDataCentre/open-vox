@@ -32,7 +32,9 @@ prek
 RACI
 RORID
 sarif
+skipif
 trivy
+unparsable
 voxtral
 Voxtral
 Zenodo
