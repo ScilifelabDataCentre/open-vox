@@ -11,9 +11,11 @@ Bitwarden
 citability
 Distributables
 Dockerfiles
+ffprobe
 Figshare
 jsquery
 Kivy
+lavfi
 logfmt
 lycheecache
 lycheeignore
@@ -30,6 +32,10 @@ prek
 RACI
 RORID
 sarif
+skipif
 trivy
+unparsable
+voxtral
+Voxtral
 Zenodo
 ZSON

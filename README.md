@@ -18,6 +18,8 @@ cd ./open-vox
 
 # Create .venv on Python 3.14, install ovox in editable mode, and install the dev tools
 uv sync --python 3.14 --extra dev
+# Pin the python environment
+uv python pin 3.14
 
 # Option 1: run through uv without activating
 uv run ovox -V
@@ -30,6 +32,17 @@ ovox -V
 
 ## Development
 
+### Versioning
+
+This project uses semantic versioning: "major.minor.patch"
+
+When starting new work, bump the appropriate version in:
+- ./pyproject.toml, version = "major.minor.patch"
+- ./src/ovox/__init__.py
+Keep these two in sync (checked by tests/test_version.py)
+
+### Git flow
+
 Create feature branch from main:
 ```bash
 git checkout main
@@ -40,11 +53,16 @@ git checkout -b AIS-<nr>-<branch-task>
 
 # ... do work ...
 
+# format
+ruff format .    # rewrites files in place
 # lint
 ruff check .
+uv run ruff format --check src tests
+# mypy checks
+uv run mypy
 
 # run tests
-pytest -v
+pytest tests/unit -v
 
 git add .
 git commit -S -m "<commit-message>"
@@ -53,16 +71,77 @@ git push -u origin <branch name>
 # Create PR
 ```
 
+### Managing the virtual environment and maintaining dependencies
+
+The python virtual environment is managed with uv together with a pyproject.toml file.
+
+```bash
+# Packages are added and removed using uv:
+uv add <pkg>
+uv remove <pkg>
+
+# Add a dev tool into the [dependency-groups]:
+uv add --dev <pkg>
+```
+
+uv add updates pyproject.toml, updates uv.lock, and installs the package into .venv.
+uv add fills in a sensible lower bound. Commit both files whenever they change.
+uv.lock records the exact versions installed.
+
+Optionals, --optional, are to be reserved for optional backends that the user can install.
+
+## Testing
+
+The project contains both automated unit and integration tests. These reside under the tests/unit and tests/integration directories respectively.
+
+Unit tests are fast and light and each developer should run them often as part of active development in the git flow as described above.
+Unit tests are also run as part of CI.
+
+To run the unit tests:
+```bash
+pytest tests/unit -v
+```
+
+Integration tests work with real files and are therefore a valuable assurance that it works in a more realistic context.
+
+Integration tests that use media files require the ffmpeg tool.
+
+Install ffmpeg:
+```bash
+sudo apt install ffmpeg
+```
+
+To run the integration tests:
+```bash
+pytest tests/integration -v
+```
+
+You can and should run the integration test against real media files.
+In this example, we have copied some real media files into the ~/media directory.
+The run:
+```bash
+OVOX_TEST_MEDIA_DIR=~/media pytest -m local_media
+```
+
 ## Usage
 
 The first usage of open-vox is as a CLI.
+
+Copy the .env.example file to .env and configure:
+```bash
+cp .env.example .env
+```
 
 ### CLI Usage
 
 ```bash
 ovox --version (or -V) prints the version of ovox and Python.
 
-ovox version prints ovox, Python, implementation and platform details. With --json it prints them as JSON, which is useful for recording the environment alongside performance test results.
+ovox version
+prints ovox, Python, implementation and platform details. With --json it prints them as JSON, which is useful for recording the environment alongside performance test results.
+
+ovox check
+Check if the STT API is reachable and credentials are valid.
 
 ovox with no arguments shows help.
 ```
