@@ -80,20 +80,48 @@ def test_path_starting_with_dash(
 
 LOCAL_MEDIA_DIR = os.environ.get("OVOX_TEST_MEDIA_DIR")
 
+# Only files with these extensions are tested; anything else in the folder
+# (.gitkeep, README.md, notes.txt, ...) is ignored.
+MEDIA_SUFFIXES = frozenset(
+    {
+        # audio
+        ".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus",
+        ".wma", ".aif", ".aiff", ".amr", ".mka",
+        # video
+        ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".wmv", ".mpg", ".mpeg", ".ts",
+    }
+)  # fmt: skip
+
+
+def _local_media_files() -> list[Path]:
+    """Media files under $OVOX_TEST_MEDIA_DIR, including subfolders."""
+    if not LOCAL_MEDIA_DIR:
+        return []
+    root = Path(LOCAL_MEDIA_DIR).expanduser()
+    if not root.is_dir():
+        raise pytest.UsageError(f"OVOX_TEST_MEDIA_DIR is not a directory: {root}")
+    return sorted(
+        p
+        for p in root.rglob("*")
+        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in MEDIA_SUFFIXES
+    )
+
+
+LOCAL_MEDIA_FILES = _local_media_files()
+
 
 @pytest.mark.local_media
 @pytest.mark.skipif(not LOCAL_MEDIA_DIR, reason="OVOX_TEST_MEDIA_DIR not set")
-def test_local_media_files_are_valid() -> None:
-    """Validate every file in $OVOX_TEST_MEDIA_DIR; all are expected to contain audio."""
-    assert LOCAL_MEDIA_DIR is not None
-    files = sorted(p for p in Path(LOCAL_MEDIA_DIR).expanduser().iterdir() if p.is_file())
-    assert files, f"No files found in {LOCAL_MEDIA_DIR}"
-
-    failures = {}
-    for path in files:
-        try:
-            validate_input(path)
-        except InputValidationError as exc:
-            failures[path.name] = str(exc)
-
-    assert not failures, failures
+@pytest.mark.skipif(
+    bool(LOCAL_MEDIA_DIR) and not LOCAL_MEDIA_FILES,
+    reason=f"no media files in OVOX_TEST_MEDIA_DIR={LOCAL_MEDIA_DIR}",
+)
+@pytest.mark.parametrize(
+    "path",
+    LOCAL_MEDIA_FILES or [None],
+    ids=lambda p: str(p.relative_to(Path(LOCAL_MEDIA_DIR or "").expanduser())) if p else "none",
+)
+def test_local_media_file_is_valid(path: Path) -> None:
+    """Each media file in $OVOX_TEST_MEDIA_DIR is expected to contain audio."""
+    info = validate_input(path)
+    assert info.audio_streams >= 1

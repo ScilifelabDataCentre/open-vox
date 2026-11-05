@@ -117,8 +117,13 @@ pytest tests/integration -v
 ```
 
 You can and should run the integration test against real media files.
+The project repository contains some in the tests/data directory.
+```bash
+OVOX_TEST_MEDIA_DIR=./tests/data pytest -m local_media
+```
+
 In this example, we have copied some real media files into the ~/media directory.
-The run:
+Then run:
 ```bash
 OVOX_TEST_MEDIA_DIR=~/media pytest -m local_media
 ```
