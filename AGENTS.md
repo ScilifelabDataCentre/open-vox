@@ -79,7 +79,7 @@ Also:
 - putting ChunkSpec’s fields in a clearer order
 - skipping chunks that are entirely silence
 
-## Known issues to be adressed later
+## Known issues to be addressed later
 
 -
 
