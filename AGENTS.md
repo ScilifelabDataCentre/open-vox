@@ -21,6 +21,8 @@ Both modes share one core pipeline:
 Keep the core free of CLI and HTTP-server concerns so the server can wrap it later as
 a thin job layer.
 
+Design decisions are in docs/design/; read them before changing the pipeline”
+
 ## Status
 
 CLI Direct mode is in progress.
@@ -36,10 +38,7 @@ The repository structure is in place with a basic CLI, validation of media files
    unsupported or corrupt media, and for video files without audio. Check that
    `ffmpeg` and `ffprobe` are on PATH.
 
-## Current epic: CLI direct mode
-Build and harden direct mode before any server work. Suggested order:
-
-3. **Audio extraction**: convert to mono, 16 kHz, compressed (for example MP3) in a temp dir, and always clean up.
+**Audio extraction**: convert to mono, 16 kHz, compressed (for example MP3) in a temp dir, and always clean up.
 There should be no new runtime dependencies, since pyproject.toml has none. Everything uses the standard library plus ffmpeg.
 Add tests including one that runs real ffmpeg.
 Also, build SttConfig from your existing settings loader and reuse whatever HTTP helper ovox check uses.
@@ -49,9 +48,11 @@ Describing how it should work: ffmpeg takes the first audio stream only (-map 0:
 Everything happens inside workdir(), a TemporaryDirectory context manager. It cleans up on success, on exceptions and on Ctrl-C.
 If ffmpeg fails, the error shows the last few lines of its stderr. There are timeouts, and an empty output file counts as an error.
 
-
-4. **Chunking**: split under the endpoint's size and duration limits, preferably on
+**Chunking**: split under the endpoint's size and duration limits, preferably on
    silence and with a small overlap.
+
+## Current epic: CLI direct mode
+Build and harden direct mode before any server work. Suggested order:
 
 Next in line:
 
@@ -64,7 +65,6 @@ Design integration test with real audio files.
 a. Committed files: to test actual transcription, commit one or two short speech clips, a few seconds each (max 500kb each). Put them in tests/data/ and use public-domain (CC0) audio or  own recording.
 b. Local folder: set an environment variable at the folder and skip when it’s unset, so CI is not affected.
 
-
 6. **Stitching**: merge chunk results, offset timestamps and de-duplicate the overlaps.
 7. **Output formats**: `txt`, `srt`, `vtt`, `json`.
 8. **`--json` timing output**: report per-stage timings (probe, extract, chunk, STT,
@@ -75,9 +75,13 @@ b. Local folder: set an environment variable at the folder and skip when it’s 
 Define the job API contract early as an OpenAPI spec from FastAPI,
 so the browser add-on can be developed against a stub in parallel.
 
+Also:
+- putting ChunkSpec’s fields in a clearer order
+- skipping chunks that are entirely silence
+
 ## Known issues to be adressed later
 
-
+-
 
 ## Conventions
 - Python, packaged via `pyproject.toml`. Check it for the actual layout, entry

@@ -5,8 +5,6 @@ Without ffmpeg/ffprobe on PATH, every test in this folder is skipped, or the
 run is stopped if OVOX_REQUIRE_FFMPEG is set (as in CI).
 """
 
-from __future__ import annotations
-
 import os
 import shutil
 import subprocess
@@ -34,37 +32,51 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def _ffmpeg(*args: str) -> None:
-    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *args], check=True)
+
+
+Part = tuple[str, float]  # ("tone" | "silence", seconds)
+
+
+def _media(out: Path, *parts: Part, video: bool = False) -> None:
+    """Write *out* from audio parts and, if *video*, a test-pattern video track.
+
+    Audio is stereo 44.1 kHz, so the extraction tests prove that ovox really
+    downmixes and resamples. The container and codecs follow the file extension.
+    With no parts, the file has no audio stream.
+    """
+    duration = sum(secs for _, secs in parts) or 1.0
+    args: list[str] = []
+    maps: list[str] = []
+    if video:
+        args += ["-f", "lavfi", "-i", f"testsrc=duration={duration}:size=64x64:rate=5"]
+        maps += ["-map", "0:v"]
+    if parts:
+        first = 1 if video else 0  # input index of the first audio part
+        for kind, secs in parts:
+            src = "sine=frequency=440" if kind == "tone" else "aevalsrc=0"
+            args += ["-f", "lavfi", "-i", f"{src}:duration={secs}"]
+        labels = "".join(f"[{first + i}:a]" for i in range(len(parts)))
+        args += ["-filter_complex", f"{labels}concat=n={len(parts)}:v=0:a=1[a]"]
+        maps += ["-map", "[a]", "-ac", "2", "-ar", "44100"]
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *args, *maps, str(out)], check=True)
 
 
 @pytest.fixture(scope="session")
 def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Generate small media files once per test session."""
     d = tmp_path_factory.mktemp("media")
-    tone = "sine=frequency=440:duration=1"
-    video = "testsrc=duration=1:size=64x64:rate=5"
+    tone: Part = ("tone", 1)
 
-    _ffmpeg("-f", "lavfi", "-i", tone, "-ar", "16000", "-ac", "1", str(d / "tone.wav"))
-    _ffmpeg("-f", "lavfi", "-i", tone, str(d / "tone.mp3"))
-    _ffmpeg(
-        "-f", "lavfi", "-i", video, "-f", "lavfi", "-i", tone, "-shortest",
-        str(d / "video_with_audio.mp4"),
-    )  # fmt: skip
-    _ffmpeg("-f", "lavfi", "-i", video, "-an", str(d / "video_no_audio.mp4"))
-    # 1 s tone, 1 s silence, 1 s tone (for silence detection).
-    _ffmpeg(
-        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-        "-f", "lavfi", "-i", "aevalsrc=0:duration=1",
-        "-filter_complex", "[0:a][1:a][0:a]concat=n=3:v=0:a=1",
-        str(d / "tone_with_silence.wav"),
-    )  # fmt: skip
-    # 2 s tone, 2 s of trailing silence.
-    _ffmpeg(
-        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-        "-f", "lavfi", "-i", "aevalsrc=0:duration=2",
-        "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1",
-        str(d / "tone_with_trailing_silence.wav"),
-    )  # fmt: skip
+    _media(d / "tone.wav", tone)
+    _media(d / "tone.mp3", tone)
+    _media(d / "video_with_audio.mp4", tone, video=True)
+    _media(d / "video_no_audio.mp4", video=True)
+    _media(d / "tone_with_silence.wav", tone, ("silence", 1), tone)
+    _media(d / "tone_with_trailing_silence.wav", ("tone", 2), ("silence", 2))
+    _media(d / "tone_only.wav", ("tone", 3))
+    # 54 s with a 1 s pause every 9 s: needs several chunks at a small max_len.
+    _media(d / "speech_like.wav", *[("tone", 8), ("silence", 1)] * 6)
 
     (d / "empty.wav").touch()
     (d / "corrupt.wav").write_bytes(b"RIFF" + bytes(range(256)) * 8)  # WAV magic, garbage body

@@ -11,11 +11,13 @@ Bitwarden
 citability
 Distributables
 Dockerfiles
+excinfo
 ffprobe
 Figshare
 jsquery
 Kivy
 lavfi
+libmp
 logfmt
 lycheecache
 lycheeignore
@@ -32,6 +34,7 @@ prek
 RACI
 RORID
 sarif
+silencedetect
 skipif
 trivy
 unparsable
