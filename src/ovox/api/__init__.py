@@ -6,7 +6,19 @@ from typing import Any
 
 import httpx
 
-from ovox.config import Config
+from ovox.config import SttConfig
+
+# Self-hosted STT endpoints routinely take many seconds (or minutes) to process a
+# chunk, so httpx's 5s default is far too aggressive. Generous per-request
+# timeouts keep real transcription calls from failing on slow hardware.
+CONNECT_TIMEOUT_S = 10.0
+READ_TIMEOUT_S = 600.0
+REQUEST_TIMEOUT = httpx.Timeout(
+    connect=CONNECT_TIMEOUT_S,
+    read=READ_TIMEOUT_S,
+    write=READ_TIMEOUT_S,
+    pool=CONNECT_TIMEOUT_S,
+)
 
 
 class STTClient:
@@ -17,6 +29,7 @@ class STTClient:
         endpoint: str | None = None,
         api_key: str | None = None,
         model: str | None = None,
+        config: SttConfig | None = None,
     ) -> None:
         """Initialise the STT client.
 
@@ -24,15 +37,19 @@ class STTClient:
             endpoint: The STT API endpoint URL. If not provided, uses the configured value.
             api_key: The API key for authentication. If not provided, uses the configured value.
             model: The model to use for transcription. If not provided, uses the configured value.
+            config: STT settings to use. If not provided, they are read from the
+                environment (and .env). Individual arguments override them.
         """
-        # Get config if needed
-        if endpoint is None or api_key is None or model is None:
-            config = Config.from_env()
+        if config is None:
+            if endpoint is None or api_key is None or model is None:
+                config = SttConfig.from_env()
+            else:
+                config = SttConfig(endpoint=endpoint, api_key=api_key, model=model)
 
-        self.endpoint: str = endpoint or config.stt_endpoint
-        self.api_key: str = api_key or config.stt_api_key
-        self.model: str = model or config.stt_model
-        self.client: httpx.AsyncClient = httpx.AsyncClient()
+        self.endpoint: str = endpoint or config.endpoint
+        self.api_key: str = api_key or config.api_key
+        self.model: str = model or config.model
+        self.client: httpx.AsyncClient = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
 
     async def __aenter__(self) -> STTClient:
         return self

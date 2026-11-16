@@ -106,7 +106,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
     from ovox.api import STTClient
 
     async def _check_async() -> int:
-        async with STTClient() as client:
+        try:
+            client = STTClient()
+        except ValueError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 1
+
+        async with client:
             result = await client.check_connection()
 
             if args.json:

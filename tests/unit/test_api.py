@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from ovox.api import STTClient
+from ovox.config import SttConfig
 
 # --- Helpers and fixtures -----------------------------------------------------
 
@@ -33,13 +34,13 @@ def mock_get() -> Iterator[AsyncMock]:
 def test_init_reads_settings_from_environment(
     stt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("STT_MODEL", "whisper-1")
+    monkeypatch.setenv("STT_MODEL", "voxtral-1")
 
     client = STTClient()
 
     assert client.endpoint == stt_env["STT_ENDPOINT"]
     assert client.api_key == stt_env["STT_API_KEY"]
-    assert client.model == "whisper-1"
+    assert client.model == "voxtral-1"
 
 
 def test_init_arguments_override_environment(stt_env: dict[str, str]) -> None:
@@ -52,6 +53,20 @@ def test_init_arguments_override_environment(stt_env: dict[str, str]) -> None:
     assert client.endpoint == "https://custom-api.example.com/v1/audio/transcriptions"
     assert client.api_key == "custom-key-123"
     assert client.model == "custom-model"
+
+
+def test_init_accepts_stt_config() -> None:
+    stt = SttConfig(
+        endpoint="https://stt.example.com/v1/audio/transcriptions",
+        api_key="config-key",
+        model="config-model",
+    )
+
+    client = STTClient(config=stt)
+
+    assert client.endpoint == "https://stt.example.com/v1/audio/transcriptions"
+    assert client.api_key == "config-key"
+    assert client.model == "config-model"
 
 
 # --- check_connection: success --------------------------------------------------

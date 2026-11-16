@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ovox.config import Config, _get_env_var, _get_optional_env_var
+from ovox.config import Config, SttConfig, _get_env_var, _get_optional_env_var
 
 
 def test_get_env_var_found():
@@ -50,31 +50,43 @@ def test_config_from_env():
     env_vars = {
         "STT_ENDPOINT": "https://api.example.com/v1/audio/transcriptions",
         "STT_API_KEY": "sk-1234567890",
-        "STT_MODEL": "whisper-1",
-        "AUDIO_SAMPLE_RATE": "22050",
-        "AUDIO_CHANNELS": "2",
+        "STT_MODEL": "voxtral-1",
     }
 
     with patch.dict("os.environ", env_vars):
         config = Config.from_env()
 
-        assert config.stt_endpoint == "https://api.example.com/v1/audio/transcriptions"
-        assert config.stt_api_key == "sk-1234567890"
-        assert config.stt_model == "whisper-1"
-        assert config.audio_sample_rate == 22050
-        assert config.audio_channels == 2
+        assert config.stt.endpoint == "https://api.example.com/v1/audio/transcriptions"
+        assert config.stt.api_key == "sk-1234567890"
+        assert config.stt.model == "voxtral-1"
 
 
 def test_config_from_env_uses_defaults(
     stt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for var in ("STT_MODEL", "AUDIO_SAMPLE_RATE", "AUDIO_CHANNELS"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("STT_MODEL", raising=False)
 
     config = Config.from_env()
 
-    assert config.stt_endpoint == stt_env["STT_ENDPOINT"]
-    assert config.stt_api_key == stt_env["STT_API_KEY"]
-    assert config.stt_model == "whisper-1"
-    assert config.audio_sample_rate == 16000
-    assert config.audio_channels == 1
+    assert config.stt.endpoint == stt_env["STT_ENDPOINT"]
+    assert config.stt.api_key == stt_env["STT_API_KEY"]
+    assert config.stt.model == "voxtral-1"
+
+
+def test_stt_config_from_env(stt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STT_MODEL", raising=False)
+
+    stt = SttConfig.from_env()
+
+    assert stt.endpoint == stt_env["STT_ENDPOINT"]
+    assert stt.api_key == stt_env["STT_API_KEY"]
+    assert stt.model == "voxtral-1"
+
+
+def test_stt_config_from_env_missing_required(
+    stt_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("STT_ENDPOINT", raising=False)
+
+    with pytest.raises(ValueError, match="STT_ENDPOINT"):
+        SttConfig.from_env()

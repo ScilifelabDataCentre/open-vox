@@ -21,29 +21,63 @@ Both modes share one core pipeline:
 Keep the core free of CLI and HTTP-server concerns so the server can wrap it later as
 a thin job layer.
 
-## Current epic: CLI direct mode
-Build and harden direct mode before any server work. Suggested order:
+## Status
 
-1. **Config and API-key check**: load settings from `.env` and the environment.
-   Add a command (for example `ovox check`) that makes a cheap authenticated
-   call to the STT endpoint and reports a clear OK or failure. Never print the key.
-2. **Input validation**: the file exists, is readable and non-empty, and `ffprobe`
+CLI Direct mode is in progress.
+
+The repository structure is in place with a basic CLI, validation of media files and API key. Unit and integration tests of this is done.
+
+**Config and API-key check**: load settings from `.env` and the environment.
+   Add a command (`ovox check`) that makes a cheap authenticated
+   call to the STT endpoint and reports a clear OK or failure.
+
+**Input validation**: the file exists, is readable and non-empty, and `ffprobe`
    finds at least one audio stream. Give clear errors for missing files, for
    unsupported or corrupt media, and for video files without audio. Check that
    `ffmpeg` and `ffprobe` are on PATH.
+
+## Current epic: CLI direct mode
+Build and harden direct mode before any server work. Suggested order:
+
 3. **Audio extraction**: convert to mono, 16 kHz, compressed (for example MP3) in a temp dir, and always clean up.
+There should be no new runtime dependencies, since pyproject.toml has none. Everything uses the standard library plus ffmpeg.
+Add tests including one that runs real ffmpeg.
+Also, build SttConfig from your existing settings loader and reuse whatever HTTP helper ovox check uses.
+
+Audio extraction (audio.py)
+Describing how it should work: ffmpeg takes the first audio stream only (-map 0:a:0) and outputs mono, 16 kHz, 32 kbps MP3. That works out to about 14 MB per hour of audio.
+Everything happens inside workdir(), a TemporaryDirectory context manager. It cleans up on success, on exceptions and on Ctrl-C.
+If ffmpeg fails, the error shows the last few lines of its stderr. There are timeouts, and an empty output file counts as an error.
+
+
 4. **Chunking**: split under the endpoint's size and duration limits, preferably on
    silence and with a small overlap.
+
+Next in line:
+
 5. **Transcription**: call the STT endpoint for each chunk, with retries/backoff and
    bounded concurrency.
+Add an ovox transcribe subcommand that calls transcribe_file.
+Install a SIGTERM handler in main that raises SystemExit, so temp cleanup also runs when the process is killed.
+
+Design integration test with real audio files.
+a. Committed files: to test actual transcription, commit one or two short speech clips, a few seconds each (max 500kb each). Put them in tests/data/ and use public-domain (CC0) audio or  own recording.
+b. Local folder: set an environment variable at the folder and skip when it’s unset, so CI is not affected.
+
+
 6. **Stitching**: merge chunk results, offset timestamps and de-duplicate the overlaps.
 7. **Output formats**: `txt`, `srt`, `vtt`, `json`.
 8. **`--json` timing output**: report per-stage timings (probe, extract, chunk, STT,
    stitch). These are used to benchmark direct mode against server mode later and
    to see where time goes (upload, queueing, STT).
 
-Later (not now): define the job API contract early as an OpenAPI spec from FastAPI,
+## Work to wait with, later (not now):
+Define the job API contract early as an OpenAPI spec from FastAPI,
 so the browser add-on can be developed against a stub in parallel.
+
+## Known issues to be adressed later
+
+
 
 ## Conventions
 - Python, packaged via `pyproject.toml`. Check it for the actual layout, entry
@@ -65,3 +99,4 @@ so the browser add-on can be developed against a stub in parallel.
 - Don't commit real media, transcripts or keys.
 - Don't hard-code a single STT vendor. Keep the endpoint and model configurable
   (an OpenAI-compatible `/v1/audio/transcriptions` is a sensible first target).
+- Don't make any commits or other git work other than git reads.

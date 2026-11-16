@@ -51,6 +51,20 @@ def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         str(d / "video_with_audio.mp4"),
     )  # fmt: skip
     _ffmpeg("-f", "lavfi", "-i", video, "-an", str(d / "video_no_audio.mp4"))
+    # 1 s tone, 1 s silence, 1 s tone (for silence detection).
+    _ffmpeg(
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+        "-f", "lavfi", "-i", "aevalsrc=0:duration=1",
+        "-filter_complex", "[0:a][1:a][0:a]concat=n=3:v=0:a=1",
+        str(d / "tone_with_silence.wav"),
+    )  # fmt: skip
+    # 2 s tone, 2 s of trailing silence.
+    _ffmpeg(
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+        "-f", "lavfi", "-i", "aevalsrc=0:duration=2",
+        "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1",
+        str(d / "tone_with_trailing_silence.wav"),
+    )  # fmt: skip
 
     (d / "empty.wav").touch()
     (d / "corrupt.wav").write_bytes(b"RIFF" + bytes(range(256)) * 8)  # WAV magic, garbage body

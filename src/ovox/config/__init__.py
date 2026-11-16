@@ -24,31 +24,31 @@ def _get_optional_env_var(name: str, default: str | None = None) -> str | None:
     return os.getenv(name, default)
 
 
+@dataclass(frozen=True)
+class SttConfig:
+    """Settings for the STT endpoint."""
+
+    endpoint: str
+    api_key: str
+    model: str
+
+    @classmethod
+    def from_env(cls) -> SttConfig:
+        """Create an SttConfig instance from environment variables."""
+        return cls(
+            endpoint=_get_env_var("STT_ENDPOINT"),
+            api_key=_get_env_var("STT_API_KEY"),
+            model=_get_optional_env_var("STT_MODEL", "voxtral-1") or "voxtral-1",
+        )
+
+
 @dataclass
 class Config:
     """Configuration for ovox."""
 
-    # STT API configuration
-    stt_endpoint: str = ""
-    stt_api_key: str = ""
-    stt_model: str = "whisper-1"
-
-    # Audio processing configuration
-    audio_sample_rate: int = 16000
-    audio_channels: int = 1
+    stt: SttConfig
 
     @classmethod
     def from_env(cls) -> Config:
         """Create a Config instance from environment variables."""
-        # Get the optional values with defaults
-        stt_model_val = _get_optional_env_var("STT_MODEL", "whisper-1") or "whisper-1"
-        audio_sample_rate_val = _get_optional_env_var("AUDIO_SAMPLE_RATE", "16000") or "16000"
-        audio_channels_val = _get_optional_env_var("AUDIO_CHANNELS", "1") or "1"
-
-        return cls(
-            stt_endpoint=_get_env_var("STT_ENDPOINT"),
-            stt_api_key=_get_env_var("STT_API_KEY"),
-            stt_model=stt_model_val,
-            audio_sample_rate=int(audio_sample_rate_val),
-            audio_channels=int(audio_channels_val),
-        )
+        return cls(stt=SttConfig.from_env())

@@ -84,6 +84,20 @@ def test_check_command_failure(capsys, stt_env):
         mock_client.check_connection.assert_called_once()
 
 
+def test_check_command_missing_config(capsys, monkeypatch):
+    """With STT_ENDPOINT / STT_API_KEY unset, check reports an actionable
+    configuration error and exits non-zero (no raw traceback)."""
+    monkeypatch.delenv("STT_ENDPOINT", raising=False)
+    monkeypatch.delenv("STT_API_KEY", raising=False)
+
+    result = main(["check"])
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "STT_ENDPOINT" in captured.err
+    assert "traceback" not in captured.err.lower()
+
+
 def test_check_command_json_output(capsys, stt_env):
     """Test the check command with JSON output format."""
     # Mock the STTClient.check_connection method to return success
