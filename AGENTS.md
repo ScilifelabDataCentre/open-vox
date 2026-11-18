@@ -52,9 +52,48 @@ If ffmpeg fails, the error shows the last few lines of its stderr. There are tim
    silence and with a small overlap.
 
 ## Current epic: CLI direct mode
-Build and harden direct mode before any server work. Suggested order:
+Build and harden direct mode before any server work.
 
+Current task:
+ovox check now only shows message:
+"Successfully connected to STT API"
+It has a --json option already.
+ovox check --
+json
+{
+  "success": true,
+  "message": "Successfully connected to STT API",
+  "status_code": 200
+}
+Both CLI and API should return more detail, endpoint url, model name, duration.
+- model name should show the configured value
+- duration should be named with the unit, duration_ms
+- Model and endpoint always present: include them even on failure, since they help with debugging.
+
+CLI: exit code is the contract. 0 means success and non-zero means failure. Shell scripts, CI and tests all use it, so ovox check should exit 1 when it can’t connect.
+Failure output: if the check fails, it would also print the endpoint and the error, with a non-zero exit code.
+
+API:
+- status_code may be null: when the connection fails before any HTTP response, there’s no code to report.
+- Optional error field: on failure, it could hold a short error type such as connection_error, timeout or http_error, which tests can check reliably instead of the message.
+
+
+Connected to STT API
+Endpoint: https://stt.example.org/v1
+Model (configured):    
+Duration: 142 ms
+
+Tests:
+- tests should verify exit code (CLI) or status_code and success field (API), model and latency >= 0 etc, not hardcoded texts.
+The exit code: 0 on success, non-zero on failure.
+The --json fields: success is true or false, status_code, model equals the configured value, endpoint equals the configured URL, and the duration is ≥ 0.
+For the plain text output, at most that the endpoint and model appear. They wouldn’t compare whole sentences.
+
+
+Suggested order:
 Next in line:
+* Add a new CLI command to perform the video/audio chunking and leave files in some dir.
+
 
 5. **Transcription**: call the STT endpoint for each chunk, with retries/backoff and
    bounded concurrency.

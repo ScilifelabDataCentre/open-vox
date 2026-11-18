@@ -16,7 +16,8 @@ import asyncio
 import json
 import platform
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from ovox import __version__
 
@@ -92,6 +93,25 @@ def _cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def print_check_result(result: Mapping[str, Any], as_json: bool = False) -> None:
+    """Print the result of ``STTClient.check_connection`` to stdout.
+
+    In JSON mode the result is printed as-is. In text mode the endpoint and
+    configured model are always shown, followed by the outcome and duration.
+    """
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return
+
+    print(result.get("message", ""))
+    error = result.get("error")
+    if error is not None:
+        print(f"Error: {error}")
+    print(f"Endpoint: {result.get('endpoint', '')}")
+    print(f"Model (configured): {result.get('model', '')}")
+    print(f"Duration: {result.get('duration_ms', 0)} ms")
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     """Handle the check command to verify STT API connection and authentication.
 
@@ -114,12 +134,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
         async with client:
             result = await client.check_connection()
-
-            if args.json:
-                print(json.dumps(result, indent=2))
-            else:
-                print(result["message"])
-
+            print_check_result(result, as_json=args.json)
             return 0 if result["success"] else 1
 
     # Run the async check function and return the exit code
