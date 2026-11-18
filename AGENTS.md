@@ -54,51 +54,65 @@ If ffmpeg fails, the error shows the last few lines of its stderr. There are tim
 ## Current epic: CLI direct mode
 Build and harden direct mode before any server work.
 
-Current task:
-ovox check now only shows message:
-"Successfully connected to STT API"
-It has a --json option already.
-ovox check --
-json
-{
-  "success": true,
-  "message": "Successfully connected to STT API",
-  "status_code": 200
-}
-Both CLI and API should return more detail, endpoint url, model name, duration.
-- model name should show the configured value
-- duration should be named with the unit, duration_ms
-- Model and endpoint always present: include them even on failure, since they help with debugging.
+* Add a new CLI command, ovox chunk, to perform the video/audio chunking and leave files in some dir.
+It splits audio and video but does not do any transcription.
+Preview and real run must use the same code. Both should use one function that decides where the chunks go, and that real transcription also uses.
+Consider that the transcription service used (target) will have limits: such as file size limit (later: optionally a transfer duration limit).
+This file size limit should be configurable in .env.example
+chunking must respect the file size limit
 
-CLI: exit code is the contract. 0 means success and non-zero means failure. Shell scripts, CI and tests all use it, so ovox check should exit 1 when it can’t connect.
-Failure output: if the check fails, it would also print the endpoint and the error, with a non-zero exit code.
+CLI command and options:
+- ovox chunk <file> --output-dir <dir>
+- ovox chunk <file> --output-dir <dir> --dry-run
 
-API:
-- status_code may be null: when the connection fails before any HTTP response, there’s no code to report.
-- Optional error field: on failure, it could hold a short error type such as connection_error, timeout or http_error, which tests can check reliably instead of the message.
+Plan:
+What the plan should show (plain text and --json):
+About the input: file, format, codec, duration, sample rate and channels, and for video, which audio track is used.
+The settings used: maximum chunk length or size, overlap, the splitting method (fixed length or at silences), and where each setting came from (config, flag or default).
+One row per chunk: index, start, end, duration and estimated size. If splitting at silences, also why each cut was placed there.
+Totals and warnings: number of chunks and total audio length, plus warnings such as “chunk 7 is over the API size limit” or “no silence found, cut at the maximum length”.
 
+Output a manifest file:
+The dry-run plan JSON, saved to the folder: same fields, same structure.
 
-Connected to STT API
-Endpoint: https://stt.example.org/v1
-Model (configured):    
-Duration: 142 ms
+Chunking:
+audio: ovox chunk on an audio file should output one or more audio chunks.
+video: ovox chunk on a video should output audio chunks by default.
+One chunk is a normal result. If the input is already within the limits, ovox chunk should still write a single chunk and say that no split was needed.
+Output files should be named with consistency, from the original filename and add 
+ex. chunk_003_754.5-910.2.wav
 
-Tests:
-- tests should verify exit code (CLI) or status_code and success field (API), model and latency >= 0 etc, not hardcoded texts.
-The exit code: 0 on success, non-zero on failure.
-The --json fields: success is true or false, status_code, model equals the configured value, endpoint equals the configured URL, and the duration is ≥ 0.
-For the plain text output, at most that the endpoint and model appear. They wouldn’t compare whole sentences.
+How the target’s limits fit with splitting at silences
+
+Turn the file size limit into a length limit. Using the bitrate of the format you send, work out a maximum chunk length, with a safety margin (say 90–95% of the limit), because container overhead and variable bitrate make sizes slightly unpredictable.
+Look for a silence before that limit. Cut at the last suitable silence before the maximum length. If none is found, cut at the maximum length, and show that as a warning in the plan.
+Check the actual size after writing. If a chunk still ends up over the limit, flag it or split it again, rather than letting the upload fail later.
+The format you send matters a lot. Compressed mono speech can fit several times more minutes under the same size limit than uncompressed stereo. That’s worth deciding early, if it isn’t already, because it changes how many chunks you get.
+Make room for a later upload time limit. Keep the limits together as a per-target setting: maximum file size now, maximum upload time later. An upload time limit then becomes another input to the same maximum-length calculation, based on an assumed upload speed, without changing how splitting works.
+
+Tests (same approach as for check, checking structure rather than wording):
+
+Unit tests on the planning function, using made-up durations and no audio files. Chunks cover the whole input with no gaps, overlaps match the setting, no chunk exceeds the maximum, and boundary cases behave (very short input, input exactly at the limit, zero overlap).
+Integration tests with short audio and video clips generated by ffmpeg. The dry-run JSON should match what ovox chunk actually writes: same number of chunks, and durations within a small tolerance. A dry run should create no files.
 
 
 Suggested order:
 Next in line:
-* Add a new CLI command to perform the video/audio chunking and leave files in some dir.
-
 
 5. **Transcription**: call the STT endpoint for each chunk, with retries/backoff and
    bounded concurrency.
 Add an ovox transcribe subcommand that calls transcribe_file.
 Install a SIGTERM handler in main that raises SystemExit, so temp cleanup also runs when the process is killed.
+CLI command and options:
+- ovox transcribe <file> --dry-run
+- ovox transcribe <file>
+
+Resuming:
+After chunking or after a stopped/failed transcription:
+Resume means: read the manifest, check the source and settings match, and transcribe the chunks with no transcript file.
+
+Track transcription progress separately, by checking whether each chunk’s transcript file exists (e.g. chunk_003.json), so the manifest never changes after it’s written.
+
 
 Design integration test with real audio files.
 a. Committed files: to test actual transcription, commit one or two short speech clips, a few seconds each (max 500kb each). Put them in tests/data/ and use public-domain (CC0) audio or  own recording.
@@ -117,9 +131,11 @@ so the browser add-on can be developed against a stub in parallel.
 Also:
 - putting ChunkSpec’s fields in a clearer order
 - skipping chunks that are entirely silence
+- consider a resume mode after chunking, to continue with transcription
+- add a CLI command to only **preview** chunking for example by a dry run to see what would be done
 
-## Known issues to be addressed later
-
+## Known Issues
+Make a note whether each issie should be addressed soon or delayed.
 -
 
 ## Conventions

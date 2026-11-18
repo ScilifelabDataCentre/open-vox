@@ -33,6 +33,27 @@ dependencies" in the [overview](overview.md)).
 or a clear failure (bad key, wrong URL, endpoint down). Users run it before long
 jobs; transcription errors caused by authentication point back to it.
 
+The check is a `GET` of the model list (`.../models`), derived from the
+configured `STT_ENDPOINT` by replacing the `/audio/transcriptions` path. It is
+sent with the same bearer key, so it also catches a bad key.
+
+A success requires a 2xx response **and** a JSON body. A 2xx with a non-JSON
+body is a failure (`error: unexpected_response`), not a success: gateways in
+front of STT servers (for example Open WebUI) answer *any* unknown URL with 200
+and a web page, so a wrong `STT_ENDPOINT` would otherwise look healthy.
+
+The result always includes the configured `endpoint` and `model` and the call's
+`duration_ms`, so failures are debuggable without re-running with more logging.
+`status_code` is `null` when no HTTP response was received (the connection
+failed or timed out). On failure, `error` is a short stable type that scripts
+can match on instead of message text: `connection_error`, `timeout`,
+`unauthorized`, `not_found`, `http_error` (any other 4xx/5xx) or
+`unexpected_response`.
+
+The exit code is the contract: 0 on success, non-zero on failure. Plain text
+output shows the outcome, the error type (on failure), the endpoint, the
+configured model and the duration; `--json` prints the result as JSON.
+
 ## Retries and backoff
 
 Each chunk request is retried on transient failures:

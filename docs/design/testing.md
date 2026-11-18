@@ -74,7 +74,18 @@ are not committed, for size and licensing reasons.
 
 ### The STT endpoint
 
-No test calls a real STT endpoint by default. The request code should be tested
+No test calls a real STT endpoint by default. The `ovox check` logic is unit
+tested by replacing `httpx.AsyncClient.get` with a fake that returns canned
+responses: success, 401/404/500, timeout and connection errors. The tests
+assert the structured fields (`success`, `status_code`, `endpoint`, `model`,
+`duration_ms`, `error`) rather than message text, and include a 200-with-HTML
+response that must be reported as a failure (a gateway answering a wrong URL
+with a web page, see [Checking the
+configuration](transcription.md#checking-the-configuration)). The CLI layer is
+tested the same way with a mocked client and checks the exit code and the
+`--json` output.
+
+Once chunk-level transcription exists, the request code should be tested
 against a small local fake server (standard library `http.server`) that can
 answer with success, 429 with `Retry-After`, 401 or invalid JSON. A manual or
 opt-in check against a real endpoint is `ovox check`.
