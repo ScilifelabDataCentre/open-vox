@@ -1,0 +1,47 @@
+name: ci-test
+
+on:
+  #pull_request:  # Run on all branches for now
+  #  branches:
+  #    - main
+  push:
+    paths-ignore:
+      - README.md
+  workflow_dispatch:
+
+# Cancel an in-progress run when a newer commit lands on the same PR/branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          command -v ffmpeg && command -v ffprobe
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: uv sync --locked --python 3.14
+
+      - name: Pytest (integration)
+        run: uv run pytest tests/integration
