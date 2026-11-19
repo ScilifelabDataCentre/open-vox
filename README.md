@@ -148,5 +148,14 @@ prints ovox, Python, implementation and platform details. With --json it prints 
 ovox check
 Check if the STT API is reachable and credentials are valid.
 
+ovox chunk <file> --output-dir <dir>
+Split an audio or video file into chunks that fit the STT endpoint's size and
+duration limits, writing them (and a JSON manifest) to the output directory. No
+transcription is done.
+  --dry-run   Print the plan and write nothing (safe; no files, no directory).
+  --plan-only Write the manifest to the output directory, but no chunk files.
+  --json      Print the plan as JSON (its content is the manifest).
+--dry-run and --plan-only are mutually exclusive.
+
 ovox with no arguments shows help.
 ```

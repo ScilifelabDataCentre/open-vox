@@ -36,13 +36,21 @@ class InputValidationError(MediaError):
 
 @dataclass(frozen=True)
 class MediaInfo:
-    """What ffprobe found in a validated input file."""
+    """What ffprobe found in a validated input file.
+
+    The ``audio_*`` fields describe the *first* audio stream (``0:a:0``), which
+    is the one ovox extracts and sends to the STT endpoint.
+    """
 
     path: Path
     format_name: str
     duration: float | None
     audio_streams: int
     video_streams: int
+    audio_codec: str
+    audio_sample_rate: int | None
+    audio_channels: int | None
+    audio_track_index: int
 
     @property
     def has_video(self) -> bool:
@@ -138,17 +146,32 @@ def _media_info(file: Path, data: dict[str, Any]) -> MediaInfo:
             raise InputValidationError(f"Video file has no audio stream: {file}")
         raise InputValidationError(f"No audio stream found in: {file}")
 
+    # The first audio stream is what ovox extracts (ffmpeg -map 0:a:0); report
+    # its codec, sample rate and channel count for the chunk plan.
+    first_audio = next(s for s in streams if s.get("codec_type") == "audio")
+
     return MediaInfo(
         path=file,
         format_name=str(fmt.get("format_name", "")),
         duration=_parse_duration(fmt.get("duration")),
         audio_streams=audio,
         video_streams=video,
+        audio_codec=str(first_audio.get("codec_name", "")),
+        audio_sample_rate=_parse_int(first_audio.get("sample_rate")),
+        audio_channels=_parse_int(first_audio.get("channels")),
+        audio_track_index=int(first_audio.get("index", 0)),
     )
 
 
 def _parse_duration(value: Any) -> float | None:
     try:
         return float(value)
+    except TypeError, ValueError:
+        return None
+
+
+def _parse_int(value: Any) -> int | None:
+    try:
+        return int(value)
     except TypeError, ValueError:
         return None

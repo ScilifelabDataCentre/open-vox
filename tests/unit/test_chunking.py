@@ -180,8 +180,16 @@ def test_overlap_of_exactly_half_is_allowed() -> None:
 
 
 def test_max_chunk_seconds_respects_both_limits() -> None:
-    assert max_chunk_seconds(25 * 1024 * 1024, 10_000, safety=1) == pytest.approx(6553.6)
+    # 25 MiB at 64 kbps is ~3276.8 s, above the 10 000 s cap -> size limit wins.
+    assert max_chunk_seconds(25 * 1024 * 1024, 10_000, safety=1) == pytest.approx(3276.8)
     assert max_chunk_seconds(25 * 1024 * 1024, 600, safety=1) == 600
+
+
+def test_max_chunk_seconds_uses_the_configured_bitrate() -> None:
+    # The size limit converts to seconds using the same bitrate the audio is
+    # encoded at, so doubling the rate halves how many seconds fit.
+    assert max_chunk_seconds(64_000, 10_000, safety=1, bitrate_bps=32_000) == pytest.approx(16.0)
+    assert max_chunk_seconds(64_000, 10_000, safety=1, bitrate_bps=64_000) == pytest.approx(8.0)
 
 
 def test_max_chunk_seconds_default_safety() -> None:
@@ -196,6 +204,8 @@ def test_max_chunk_seconds_rejects_bad_arguments() -> None:
         max_chunk_seconds(safety=0)
     with pytest.raises(ValueError, match="safety"):
         max_chunk_seconds(safety=1.5)
+    with pytest.raises(ValueError, match="bitrate_bps"):
+        max_chunk_seconds(bitrate_bps=0)
 
 
 # --- parse_silencedetect ---------------------------------------------------------

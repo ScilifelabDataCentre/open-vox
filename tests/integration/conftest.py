@@ -17,6 +17,23 @@ FFMPEG_AVAILABLE = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
 MISSING_MSG = "ffmpeg/ffprobe not on PATH"
 
 
+@pytest.fixture(autouse=True)
+def deployment_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the deployment settings to the built-in defaults for every test.
+
+    ``ovox.config`` loads the repo's ``.env`` at import time, and a developer
+    may change ``AUDIO_*``/``CHUNK_*`` in there. These tests assert against the
+    built-in defaults (mono, 16 kHz, 64 kbps, safety 0.8), so the environment
+    is overridden per test to keep the results deterministic.
+    """
+    monkeypatch.setenv("AUDIO_SAMPLE_RATE", "16000")
+    monkeypatch.setenv("AUDIO_CHANNELS", "1")
+    monkeypatch.setenv("AUDIO_BITRATE_KBPS", "64")
+    monkeypatch.setenv("CHUNK_MAX_SIZE_BYTES", "26214400")
+    monkeypatch.setenv("CHUNK_MAX_DURATION_S", "600")
+    monkeypatch.setenv("CHUNK_SAFETY", "0.8")
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if FFMPEG_AVAILABLE:
         return
@@ -77,6 +94,9 @@ def media_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _media(d / "tone_only.wav", ("tone", 3))
     # 54 s with a 1 s pause every 9 s: needs several chunks at a small max_len.
     _media(d / "speech_like.wav", *[("tone", 8), ("silence", 1)] * 6)
+    # 24 s of video with audio: long enough to need several chunks at a small
+    # max duration, so the video path is exercised end to end.
+    _media(d / "video_long.mp4", ("tone", 24), video=True)
 
     (d / "empty.wav").touch()
     (d / "corrupt.wav").write_bytes(b"RIFF" + bytes(range(256)) * 8)  # WAV magic, garbage body

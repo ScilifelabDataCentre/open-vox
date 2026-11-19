@@ -19,15 +19,25 @@ first so that a bad input fails in under a second instead of after extraction.
 
 ## Audio extraction (`ovox.audio`)
 
-The first audio stream of the input is converted to **mono, 16 kHz, 32 kbps
-CBR MP3**.
+The first audio stream of the input is converted to a **constant-bitrate (CBR)
+MP3**. The sample rate, channel count and bitrate are deployment settings in
+the "Audio processing" block of `.env`; the built-in defaults are **mono,
+16 kHz, 64 kbps** (about 28.8 MB per hour of audio).
 
-| Choice | Reason |
-| --- | --- |
-| First audio stream only (`-map 0:a:0`) | Ignores video, subtitles and cover art. Files with several audio tracks (for example several languages) use the first; choosing a track is a possible later option. |
-| Mono | Speech recognition does not use stereo; halves the data. |
-| 16 kHz | The native sample rate of common STT models (for example Whisper). Higher rates add size without improving accuracy. |
-| MP3, 32 kbps, constant bitrate | Widely accepted by STT endpoints and small (about 14 MB per hour). A constant bitrate makes file size predictable from duration, which chunking relies on. |
+| Setting | Env var | Default | Reason |
+| --- | --- | --- | --- |
+| First audio stream only (`-map 0:a:0`) | — | — | Ignores video, subtitles and cover art. Files with several audio tracks (for example several languages) use the first; choosing a track is a possible later option. |
+| Channels | `AUDIO_CHANNELS` | 1 (mono) | Speech recognition does not use stereo; halves the data. |
+| Sample rate | `AUDIO_SAMPLE_RATE` | 16000 | The native sample rate of common STT models (for example Whisper). Higher rates add size without improving accuracy. Also selects which MP3 bitrates are valid. |
+| MP3 bitrate (CBR) | `AUDIO_BITRATE_KBPS` | 64 | Widely accepted by STT endpoints. A constant bitrate makes file size predictable from duration, which chunking relies on. 64 kbps gives about 28.8 MB/hour. |
+
+The sample rate and bitrate are validated together at startup: MP3 only allows
+certain bitrates per sample rate (16/22.05/24 kHz: 8–160 kbps; 32/44.1/48 kHz:
+32–320 kbps). An out-of-table value is rejected with a clear error, because
+ffmpeg would otherwise quietly pick a different bitrate and the size
+calculations would be wrong without anyone noticing. The bitrate is expressed in
+kilobits per second in the environment (`-b:a 64k` is how people and ffmpeg
+state it) and converted to bits per second internally.
 
 Alternatives considered: WAV/PCM (lossless but about 115 MB per hour at 16 kHz
 mono, so many more chunks), FLAC (smaller than WAV but not accepted everywhere),
@@ -54,9 +64,12 @@ into chunks. The goals, in order:
 
 ### Chunk length limit
 
-`max_chunk_seconds` turns the endpoint's size limit into seconds using the fixed
-MP3 bitrate, takes the smaller of that and the duration limit, and applies a
-safety margin:
+The target endpoint's limits are kept together as per-target settings
+(`CHUNK_MAX_SIZE_BYTES`, `CHUNK_MAX_DURATION_S` and `CHUNK_SAFETY` in `.env`),
+so pointing ovox at a different endpoint is a config change, not a code change.
+`max_chunk_seconds` turns the size limit into seconds using the *configured*
+MP3 bitrate (the same `AUDIO_BITRATE_KBPS` the audio is encoded at), takes the
+smaller of that and the duration limit, and applies a safety margin:
 
 ```
 max_len = min(max_bytes * 8 / bitrate, max_seconds) * safety
@@ -64,6 +77,21 @@ max_len = min(max_bytes * 8 / bitrate, max_seconds) * safety
 
 Defaults: 25 MiB, 600 s and a safety factor of 0.8, which gives 480 s chunks
 (the duration limit wins). Point these at the real endpoint's limits.
+
+The extraction and the planning must read the *same* bitrate, so the size
+estimate matches the file actually written. That is why the bitrate is a single
+config value passed to both, not a constant in each module.
+
+The format you send matters a lot: mono 16 kHz MP3 at 64 kbps fits about
+28.8 MB per hour, so several times more minutes sit under a given size limit
+than uncompressed stereo would. The safety margin (0.8 by default,
+`CHUNK_SAFETY`) leaves room for container overhead and variable-bitrate drift,
+because estimated sizes are based on the CBR rate and the endpoint's real limit
+is hard.
+
+An upload-*time* limit will be added later as another input to the same
+maximum-length calculation (based on an assumed upload speed), without changing
+how splitting works.
 
 ### Where to cut
 

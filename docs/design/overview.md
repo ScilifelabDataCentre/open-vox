@@ -31,12 +31,23 @@ Why direct mode first:
 input file
   -> validate      (ovox.media)      file exists, readable, non-empty, has an audio stream
   -> extract       (ovox.audio)      mono 16 kHz MP3 in a private temp dir
-  -> plan chunks   (ovox.chunking)   silence detection + chunk plan within endpoint limits
-  -> cut chunks
+  -> plan chunks   (ovox.plan)       silence detection + chunk plan within endpoint limits
+  -> cut chunks    (ovox.audio)      one file per planned chunk, stream copy
   -> transcribe    (STT endpoint)    per chunk, retries, bounded concurrency
   -> merge                           join texts, remove words repeated across overlaps
   -> transcript
 ```
+
+`ovox.plan.build_plan` is the single place that decides where the chunks go. It
+is used by every mode of `ovox chunk` and, in due course, by real transcription,
+so the plan a preview prints is always an accurate description of what would be
+uploaded. `ovox chunk` splits a file into chunks that fit the endpoint's limits,
+without doing any transcription, in three modes:
+
+- **real** (default): writes the chunks plus a JSON manifest to the output dir.
+- **`--plan-only`**: writes just the manifest, no chunks.
+- **`--dry-run`**: prints the plan and writes nothing — no files, no directory —
+  so it is safe to run anywhere.
 
 All intermediate files live in one temp directory per run, which is always
 removed (see [Audio pipeline](audio-pipeline.md#temporary-files)).

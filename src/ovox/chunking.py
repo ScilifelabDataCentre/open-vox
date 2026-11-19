@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ovox import audio
-from ovox.audio import MP3_BITRATE_BPS, AudioExtractionError
+from ovox.audio import DEFAULT_BITRATE_BPS, AudioExtractionError
 
 # Sensible defaults; every function taking them can be pointed at an
 # endpoint's actual limits.
@@ -68,18 +68,28 @@ def max_chunk_seconds(
     max_bytes: int = DEFAULT_MAX_CHUNK_SIZE_BYTES,
     max_seconds: float = DEFAULT_MAX_CHUNK_SECONDS,
     safety: float = DEFAULT_SAFETY,
+    bitrate_bps: int = DEFAULT_BITRATE_BPS,
 ) -> float:
     """Largest chunk length in seconds allowed by the size and duration limits.
 
     The MP3 bitrate is known at extraction time (see ovox.audio), so the byte
     limit converts to seconds exactly. ``safety`` keeps a margin below the
     endpoint's hard limits.
+
+    Args:
+        max_bytes, max_seconds: The endpoint's size and duration limits.
+        safety: Fraction of the limits to plan chunks at, in (0, 1].
+        bitrate_bps: The CBR bitrate the audio is encoded at. Pass the same
+            value used to extract the audio (see :class:`ovox.config.AudioConfig`)
+            so the size estimate matches the real file size.
     """
     if max_bytes <= 0 or max_seconds <= 0:
         raise ValueError("max_bytes and max_seconds must be positive")
     if not 0 < safety <= 1:
         raise ValueError("safety must be in (0, 1]")
-    from_bytes = max_bytes * 8.0 / MP3_BITRATE_BPS  # bytes -> bits -> seconds
+    if bitrate_bps <= 0:
+        raise ValueError("bitrate_bps must be positive")
+    from_bytes = max_bytes * 8.0 / bitrate_bps  # bytes -> bits -> seconds
     return min(from_bytes, max_seconds) * safety
 
 
@@ -117,6 +127,7 @@ def plan_chunks(
     safety: float = DEFAULT_SAFETY,
     overlap: float = DEFAULT_OVERLAP_S,
     search_window: float = DEFAULT_SEARCH_WINDOW_S,
+    bitrate_bps: int = DEFAULT_BITRATE_BPS,
 ) -> list[ChunkSpec]:
     """Split *duration* seconds of audio into chunks no longer than the limits.
 
@@ -137,6 +148,8 @@ def plan_chunks(
             ``max_chunk_seconds(max_bytes, max_seconds, safety)``.
         max_bytes, max_seconds, safety: Endpoint limits used when *max_len*
             is not given.
+        bitrate_bps: CBR bitrate used to convert the size limit to seconds;
+            pass the same value the audio is encoded at.
         overlap: Seconds of repeated audio at the start of hard-cut chunks.
             At most half of the chunk length.
         search_window: How far back from the planned end to look for silence.
@@ -149,7 +162,7 @@ def plan_chunks(
     if duration == 0:
         return []
     if max_len is None:
-        max_len = max_chunk_seconds(max_bytes, max_seconds, safety)
+        max_len = max_chunk_seconds(max_bytes, max_seconds, safety, bitrate_bps)
     if max_len <= 0:
         raise ValueError("max_len must be positive")
     if overlap < 0:

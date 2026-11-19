@@ -72,6 +72,7 @@ def test_extract_audio_command(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> No
         assert out.read_bytes() == b"fake mp3"
 
     command, _ = fake_ffmpeg.calls[0]
+    # Defaults are mono, 16 kHz, 64 kbps CBR MP3 (the built-in upload format).
     assert command == [
         "ffmpeg",
         "-v",
@@ -90,9 +91,20 @@ def test_extract_audio_command(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> No
         "-c:a",
         "libmp3lame",
         "-b:a",
-        "32k",
+        "64k",
         str(d / "audio.mp3"),
     ]
+
+
+def test_extract_audio_uses_configured_format(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    # A non-default upload format changes -ac, -ar and -b:a accordingly.
+    with workdir() as d:
+        extract_audio(source_file, d, sample_rate=48000, channels=2, bitrate_bps=128_000)
+
+    command, _ = fake_ffmpeg.calls[0]
+    assert command[command.index("-ac") + 1] == "2"
+    assert command[command.index("-ar") + 1] == "48000"
+    assert command[command.index("-b:a") + 1] == "128k"
 
 
 @pytest.mark.parametrize(

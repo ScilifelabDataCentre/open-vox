@@ -28,7 +28,8 @@ def test_extract_audio_produces_mono_16k_mp3(media_dir: Path, name: str) -> None
         out = extract_audio(media_dir / name, d)
 
         assert out == d / "audio.mp3"
-        # 1 s of audio at 32 kbps is about 4 KB; leave generous headroom.
+        # 1 s of audio at 64 kbps is about 8 KB; leave generous headroom for
+        # frame alignment.
         assert 0 < out.stat().st_size < 10_000
 
         streams = _probe_streams(out)
@@ -38,6 +39,9 @@ def test_extract_audio_produces_mono_16k_mp3(media_dir: Path, name: str) -> None
         assert stream["codec_name"] == "mp3"
         assert stream["channels"] == 1
         assert stream["sample_rate"] == "16000"
+        # CBR at the configured bitrate (64 kbps, pinned by the deployment_env
+        # fixture), which is what makes the chunk-size estimates predictable.
+        assert int(stream["bit_rate"]) == 64000
 
 
 def test_extract_audio_from_video_keeps_audio_only(media_dir: Path) -> None:

@@ -22,7 +22,13 @@ from ovox.media import (
 
 # --- Helpers and fixtures -----------------------------------------------------
 
-AUDIO_STREAM = {"codec_type": "audio", "codec_name": "pcm_s16le"}
+AUDIO_STREAM = {
+    "codec_type": "audio",
+    "codec_name": "pcm_s16le",
+    "sample_rate": "44100",
+    "channels": 2,
+    "index": 0,
+}
 VIDEO_STREAM = {"codec_type": "video", "codec_name": "h264", "disposition": {"attached_pic": 0}}
 COVER_ART = {"codec_type": "video", "codec_name": "mjpeg", "disposition": {"attached_pic": 1}}
 
@@ -158,7 +164,15 @@ def test_valid_audio_file(media_file: Path, fake_ffprobe: FakeFFprobe) -> None:
     info = validate_input(media_file)
 
     assert info == MediaInfo(
-        path=media_file, format_name="wav", duration=1.5, audio_streams=1, video_streams=0
+        path=media_file,
+        format_name="wav",
+        duration=1.5,
+        audio_streams=1,
+        video_streams=0,
+        audio_codec="pcm_s16le",
+        audio_sample_rate=44100,
+        audio_channels=2,
+        audio_track_index=0,
     )
     assert info.has_video is False
     assert fake_ffprobe.calls == [media_file]
