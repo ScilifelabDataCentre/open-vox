@@ -19,9 +19,18 @@ permissions:
 
 jobs:
   integration-tests:
-    name: Integration tests
-    runs-on: ubuntu-latest
+    name: Integration tests (ffmpeg on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # ovox must behave the same on whatever ffmpeg the user has installed
+        # (6.x through 8.x), so run the integration tests on both an older and
+        # the newest distro-provided ffmpeg.
+        os:
+          - ubuntu-24.04  # ffmpeg 6.1
+          - ubuntu-latest # ffmpeg 8.0
 
     steps:
       - name: Check out repository

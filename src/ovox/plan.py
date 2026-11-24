@@ -49,7 +49,14 @@ class Setting:
 
 @dataclass
 class ChunkEntry:
-    """One planned (and, after writing, actual) chunk."""
+    """One planned (and, after writing, actual) chunk.
+
+    ``start``, ``end`` and ``duration`` describe the chunk as *planned*;
+    ``actual_size`` and ``actual_duration`` describe the file as *written*
+    (both ``None`` until the chunk has been cut). ``actual_duration`` is
+    measured by decoding the written file, so the manifest matches what is on
+    disk rather than what an MP3 header claims.
+    """
 
     index: int
     start: float
@@ -59,6 +66,7 @@ class ChunkEntry:
     name: str
     reason: str
     actual_size: int | None = None
+    actual_duration: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -68,6 +76,7 @@ class ChunkEntry:
             "duration": self.duration,
             "estimated_size": self.estimated_size,
             "actual_size": self.actual_size,
+            "actual_duration": self.actual_duration,
             "name": self.name,
             "reason": self.reason,
         }
@@ -210,37 +219,34 @@ def build_plan(
 
 
 def write_chunks(plan: ChunkPlan, output_dir: Path, audio_config: AudioConfig) -> list[Path]:
-    """Write the chunks of *plan* into *output_dir* and record their sizes.
+    """Write the chunks of *plan* into *output_dir* and record their size and length.
 
-    Re-extracts the audio and cuts each planned range with ffmpeg, so the files
-    written are exactly the ones a real transcription would upload. The audio is
-    re-encoded at the format in *audio_config* (the same one :func:`build_plan`
-    used), so the files match the plan's size estimates. Returns the written
-    paths in plan order.
+    Cuts each planned range from the original source file with ffmpeg (see
+    :func:`ovox.audio.cut_audio`), re-encoding to the format in *audio_config*,
+    so the files written are exactly the ones a real transcription would upload
+    and match the plan's size estimates. Each written chunk is then measured by
+    decoding (``actual_duration``), so the manifest records what is actually on
+    disk rather than what the plan assumed. Returns the written paths in plan
+    order.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    info = plan.input
-    file = str(info["file"])
-    raw_duration = info["duration"]
-    duration: float | None = None
-    if raw_duration is not None:
-        duration = cast(float, raw_duration)
-    with audio.workdir() as d:
-        mp3 = audio.extract_audio(
-            Path(file),
-            d,
-            duration=duration,
+    source = Path(str(plan.input["file"]))
+    paths: list[Path] = []
+    for entry in plan.chunks:
+        out = output_dir / entry.name
+        audio.cut_audio(
+            source,
+            out,
+            entry.start,
+            entry.end,
             sample_rate=audio_config.sample_rate,
             channels=audio_config.channels,
             bitrate_bps=audio_config.bitrate_bps,
         )
-        paths: list[Path] = []
-        for entry in plan.chunks:
-            out = output_dir / entry.name
-            audio.cut_audio(mp3, out, entry.start, entry.end)
-            entry.actual_size = out.stat().st_size
-            paths.append(out)
+        entry.actual_size = out.stat().st_size
+        entry.actual_duration = audio.decoded_duration(out, sample_rate=audio_config.sample_rate)
+        paths.append(out)
 
     # Check the real size after writing: the estimate is based on the CBR rate,
     # but container overhead and variable-bitrate drift can push a chunk over.

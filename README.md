@@ -111,6 +111,12 @@ Install ffmpeg:
 sudo apt install ffmpeg
 ```
 
+ovox calls ffmpeg/ffprobe through `subprocess` and does not pin a version: it
+should work on whatever you have installed. CI runs the integration tests
+against the distro ffmpeg on `ubuntu-24.04` (ffmpeg 6.1) and `ubuntu-latest`
+(ffmpeg 8.0). Chunk lengths are measured by decoding, so they do not depend on
+the ffmpeg version.
+
 To run the integration tests:
 ```bash
 pytest tests/integration -v

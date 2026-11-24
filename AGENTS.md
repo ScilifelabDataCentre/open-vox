@@ -99,7 +99,7 @@ Also:
 - skipping chunks that are entirely silence
 
 ## Known Issues
-Make a note whether each issie should be addressed soon or delayed.
+Make a note whether each issue should be addressed soon or delayed.
 -
 
 ## Conventions

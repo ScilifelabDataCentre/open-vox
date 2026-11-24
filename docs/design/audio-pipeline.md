@@ -46,11 +46,12 @@ format could become configurable per endpoint.
 
 ### Temporary files
 
-Each run gets one private temp directory (`workdir()`, based on
-`tempfile.TemporaryDirectory`) holding the extracted audio and the chunks. It is
-removed when the run ends, also on errors and Ctrl-C. For SIGTERM, the CLI
-installs a handler that raises `SystemExit` so the same cleanup runs. Nothing is
-written next to the user's input file.
+Planning gets one private temp directory (`workdir()`, based on
+`tempfile.TemporaryDirectory`) holding the extracted audio (used for silence
+detection). It is removed when the plan is built, also on errors and Ctrl-C.
+Chunk files go straight to the output directory. For SIGTERM, the CLI installs
+a handler that raises `SystemExit` so the same cleanup runs. Nothing is written
+next to the user's input file.
 
 ## Chunking (`ovox.chunking`)
 
@@ -130,11 +131,29 @@ Alternatives considered:
 
 ### Cutting the audio
 
-Chunks are cut from the extracted MP3 with stream copy (`-c copy`), which is
-fast and needs no re-encoding. MP3 frames are 36 ms at 16 kHz (576 samples), so cut points
-are accurate to a frame, well within the overlap and silence margins. Each chunk
-file is checked against the size limit. Audio shorter than `max_len` is sent as
-one chunk without cutting.
+Each chunk is produced by **decoding the planned range from the original source
+file and re-encoding** it to the upload format (mono, 16 kHz, CBR MP3). The cut
+is positioned with an input seek (`-ss` before `-i`) plus an exact `-t`
+duration, so it lands at the planned sample on every ffmpeg version.
+
+This is deliberately **not** a stream copy (`-c copy`) of the extracted MP3.
+Stream copy can only cut on whole MP3 frames, and because an MP3's trailing
+bit-reservoir and encoder padding hold no decodable samples once you cut into
+them, a copy near the end of the file decodes to *less* audio than its header
+claims (measured ~0.25 s short at 16 kHz). That loss varied between ffmpeg
+versions and would have shifted transcript timestamps and broken resume.
+Re-encoding removes the version dependence; 16 kHz mono MP3 is fast, and
+cutting from the *source* (not the intermediate MP3) keeps the chunk to a
+single generation of lossy compression.
+
+A chunk's real length is measured by **decoding it and counting samples**
+(`decoded_duration`), not by ffprobe's reported (header) duration: for an MP3
+the header includes the padding above, and how much it overstates differs
+between ffmpeg versions. The measured length is recorded in the manifest as
+`actual_duration` so the manifest matches what is actually on disk.
+
+Each chunk file is checked against the size limit. Audio shorter than `max_len`
+is sent as one chunk without cutting.
 
 ## Known limitations and possible improvements
 

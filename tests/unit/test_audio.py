@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 from ovox import audio
-from ovox.audio import AudioExtractionError, extract_audio, workdir
+from ovox.audio import (
+    AudioExtractionError,
+    cut_audio,
+    decoded_duration,
+    extract_audio,
+    workdir,
+)
 
 
 class FakeFFmpeg:
@@ -162,3 +168,123 @@ def test_extract_audio_empty_output_is_an_error(fake_ffmpeg: FakeFFmpeg, source_
 
     with workdir() as d, pytest.raises(AudioExtractionError, match="produced no audio"):
         extract_audio(source_file, d)
+
+
+# --- cut_audio: success --------------------------------------------------------
+
+
+def test_cut_audio_command(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    with workdir() as d:
+        out = cut_audio(source_file, d / "chunk.mp3", 10.0, 25.0)
+        assert out == d / "chunk.mp3"
+
+    command, _ = fake_ffmpeg.calls[0]
+    # Cuts [10, 25) to mono 16 kHz CBR MP3 at the built-in upload format. The
+    # seek is an input seek (-ss before -i) and the cut is re-encoded (not
+    # -c copy), so it is sample-accurate on every ffmpeg version.
+    assert command == [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-ss",
+        "10.000",
+        "-i",
+        str(source_file.resolve()),
+        "-t",
+        "15.000",
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "64k",
+        str(d / "chunk.mp3"),
+    ]
+    # Not a stream copy.
+    assert "copy" not in command
+
+
+def test_cut_audio_uses_configured_format(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    with workdir() as d:
+        cut_audio(
+            source_file,
+            d / "chunk.mp3",
+            0.0,
+            30.0,
+            sample_rate=48000,
+            channels=2,
+            bitrate_bps=128_000,
+        )
+
+    command, _ = fake_ffmpeg.calls[0]
+    assert command[command.index("-ac") + 1] == "2"
+    assert command[command.index("-ar") + 1] == "48000"
+    assert command[command.index("-b:a") + 1] == "128k"
+
+
+def test_cut_audio_rejects_invalid_range(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    with workdir() as d, pytest.raises(AudioExtractionError, match="Invalid chunk range"):
+        cut_audio(source_file, d / "chunk.mp3", 5.0, 5.0)
+
+
+def test_cut_audio_failure_includes_stderr_tail(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    fake_ffmpeg.returncode = 1
+    fake_ffmpeg.stderr = "one\ntwo\nthree\nfour\nfive\nsix"
+
+    with workdir() as d, pytest.raises(AudioExtractionError) as excinfo:
+        cut_audio(source_file, d / "chunk.mp3", 0.0, 10.0)
+
+    message = str(excinfo.value)
+    assert "ffmpeg failed while cutting" in message
+    assert "six" in message
+
+
+def test_cut_audio_timeout_is_an_error(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    fake_ffmpeg.raises = subprocess.TimeoutExpired(cmd="ffmpeg", timeout=120)
+
+    with workdir() as d, pytest.raises(AudioExtractionError, match="timed out after 120s"):
+        cut_audio(source_file, d / "chunk.mp3", 0.0, 30.0)
+
+
+def test_cut_audio_empty_output_is_an_error(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    fake_ffmpeg.writes_output = False
+
+    with workdir() as d, pytest.raises(AudioExtractionError, match="produced no audio"):
+        cut_audio(source_file, d / "chunk.mp3", 0.0, 10.0)
+
+
+# --- decoded_duration ----------------------------------------------------------
+
+
+def test_decoded_duration_decodes_to_pcm(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    # The fake writes a known byte count to the PCM output; decoded_duration
+    # converts it (2 bytes per s16le sample) back to seconds at the rate.
+    # b"fake mp3" is 8 bytes -> 4 s16le samples -> 4/16000 s at the default rate.
+    assert decoded_duration(source_file) == pytest.approx(8 // 2 / 16000)
+    command, _ = fake_ffmpeg.calls[0]
+    # Decodes to mono 16 kHz s16le so the sample count maps to seconds.
+    assert command[command.index("-f") + 1] == "s16le"
+    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ar") + 1] == "16000"
+
+
+def test_decoded_duration_uses_configured_rate(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    # A different decode rate changes the seconds-per-sample conversion.
+    assert decoded_duration(source_file, sample_rate=48000) == pytest.approx(8 // 2 / 48000)
+
+    command, _ = fake_ffmpeg.calls[0]
+    assert command[command.index("-ar") + 1] == "48000"
+
+
+def test_decoded_duration_failure_is_an_error(fake_ffmpeg: FakeFFmpeg, source_file: Path) -> None:
+    fake_ffmpeg.returncode = 1
+
+    with pytest.raises(AudioExtractionError, match="measuring the duration"):
+        decoded_duration(source_file)

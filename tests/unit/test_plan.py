@@ -40,7 +40,7 @@ class FakeAudio:
 
     def __init__(self, cut_size: int = 1000) -> None:
         self.cut_size = cut_size
-        self.cuts: list[tuple[float, float, Path]] = []
+        self.cuts: list[tuple[Path, float, float, Path]] = []
         self.extractions: list[Path] = []
         self.format: tuple[int | None, int | None, int | None] | None = None
 
@@ -58,10 +58,14 @@ class FakeAudio:
         self.format = (sample_rate, channels, bitrate_bps)
         return dest_dir / "audio.mp3"
 
-    def cut_audio(self, source, output, start, end):
+    def cut_audio(self, source, output, start, end, **upload_format):
         output.write_bytes(b"x" * self.cut_size)
-        self.cuts.append((start, end, output))
+        self.cuts.append((source, start, end, output))
         return output
+
+    def decoded_duration(self, path, *, sample_rate=16000):
+        # A real MP3 of cut_size bytes at 64 kbps is cut_size * 8 / 64000 seconds.
+        return Path(path).stat().st_size * 8 / 64000
 
 
 @pytest.fixture
@@ -69,6 +73,7 @@ def fake_audio(monkeypatch: pytest.MonkeyPatch) -> FakeAudio:
     fake = FakeAudio()
     monkeypatch.setattr(audio, "extract_audio", fake.extract_audio)
     monkeypatch.setattr(audio, "cut_audio", fake.cut_audio)
+    monkeypatch.setattr(audio, "decoded_duration", fake.decoded_duration)
     return fake
 
 
@@ -309,6 +314,22 @@ def test_write_chunks_records_actual_sizes(
     assert all(e.actual_size is not None for e in plan.chunks)
 
 
+def test_write_chunks_records_measured_duration(
+    tmp_path: Path, fake_audio: FakeAudio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_silences(monkeypatch, [])
+    info = make_info(tmp_path, duration=10.0)
+    plan = build_plan(info, default_config(), default_audio())
+
+    write_chunks(plan, tmp_path / "chunks", default_audio())
+
+    # The manifest records the written length (measured), not just the plan.
+    # A 1000-byte fake chunk at 64 kbps is 1000 * 8 / 64000 = 0.125 s.
+    assert all(e.actual_duration == pytest.approx(0.125) for e in plan.chunks)
+    # And each cut was made from the original source, not an intermediate file.
+    assert all(cut[0] == info.path for cut in fake_audio.cuts)
+
+
 def test_write_chunks_creates_output_dir(
     tmp_path: Path, fake_audio: FakeAudio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -340,8 +361,11 @@ def test_plan_manifest_matches_chunks(
     for a, b in zip(data["chunks"], plan.chunks, strict=True):
         assert a["start"] == b.start
         assert a["end"] == b.end
+        assert a["duration"] == b.duration
         assert a["name"] == b.name
         assert a["estimated_size"] == b.estimated_size
+        assert a["actual_size"] == b.actual_size
+        assert a["actual_duration"] == b.actual_duration
     # Settings carry value + source.
     assert data["settings"]["max_chunk_duration_s"]["value"] == 300.0
     assert data["settings"]["max_chunk_duration_s"]["source"] == "flag"

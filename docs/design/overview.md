@@ -30,9 +30,9 @@ Why direct mode first:
 ```
 input file
   -> validate      (ovox.media)      file exists, readable, non-empty, has an audio stream
-  -> extract       (ovox.audio)      mono 16 kHz MP3 in a private temp dir
+  -> extract       (ovox.audio)      mono 16 kHz MP3 in a private temp dir (for silence detection)
   -> plan chunks   (ovox.plan)       silence detection + chunk plan within endpoint limits
-  -> cut chunks    (ovox.audio)      one file per planned chunk, stream copy
+  -> cut chunks    (ovox.audio)      one file per planned chunk, accurate cut re-encoded from the source
   -> transcribe    (STT endpoint)    per chunk, retries, bounded concurrency
   -> merge                           join texts, remove words repeated across overlaps
   -> transcript

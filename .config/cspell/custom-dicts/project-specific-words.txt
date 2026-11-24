@@ -17,6 +17,7 @@ ffprobe
 Figshare
 jsquery
 Kivy
+KMGTPE
 lavfi
 libmp
 logfmt

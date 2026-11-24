@@ -4,19 +4,34 @@ The central property under test is that the preview (``--dry-run``) and the
 real run share one code path, so the plan a dry run prints describes exactly the
 files a real run writes: same number of chunks, same names, and matching
 durations. A dry run writes nothing; ``--plan-only`` writes just the manifest.
+
+Chunk lengths are measured by *decoding* the files and counting samples, not
+by ffprobe's reported (header) duration: for an MP3 the header includes
+encoder padding and trailing bit-reservoir that hold no decodable samples, and
+how much it overstates differs between ffmpeg versions. Decoded length is the
+ground truth, and it is what the transcript timestamps are based on.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
 
+from ovox.audio import decoded_duration
 from ovox.cli import main
 
 MANIFEST = "ovox-chunk-manifest.json"
+
+# A cut is sample-accurate, but MP3 encoding can add up to one frame of
+# encoder delay/padding at each edge (one 16 kHz frame is 1152 samples,
+# 72 ms). Allow two frames; that is far below the ~0.25 s of audio the old
+# stream-copy cut lost near the end of a file, so it still catches real
+# drift while tolerating the format's normal wobble.
+DURATION_TOLERANCE_S = 2 * 1152 / 16000
 
 
 def _run_chunk(file: Path, out_dir: Path, *extra: str) -> int:
@@ -36,23 +51,9 @@ def _dry_run_json(file: Path, out_dir: Path, capsys, *extra: str) -> tuple[int, 
     return rc, json.loads(capsys.readouterr().out)
 
 
-def _probe_duration(path: Path) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=nw=1:nk=1",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return float(result.stdout.strip())
+def _decoded_duration(path: Path) -> float:
+    """Measured length of *path*, decoding and counting samples (see module doc)."""
+    return decoded_duration(path, sample_rate=16000)
 
 
 def test_dry_run_writes_nothing(media_dir: Path, tmp_path: Path, capsys) -> None:
@@ -114,10 +115,12 @@ def test_dry_run_and_real_run_agree(media_dir: Path, tmp_path: Path, capsys) -> 
         assert dc["duration"] == pytest.approx(rc["duration"], abs=1e-6)
         assert dc["reason"] == rc["reason"]
 
-    # The written files' real durations match the plan within MP3 tolerance.
+    # The written files' real (decoded) durations match the plan, and the
+    # manifest records that measured length for each chunk.
     for c in r["chunks"]:
-        measured = _probe_duration(real / c["name"])
-        assert measured == pytest.approx(c["duration"], abs=0.15)
+        measured = _decoded_duration(real / c["name"])
+        assert measured == pytest.approx(c["duration"], abs=DURATION_TOLERANCE_S)
+        assert c["actual_duration"] == pytest.approx(measured, abs=1e-9)
 
 
 def test_chunks_cover_the_input(media_dir: Path, tmp_path: Path) -> None:
@@ -130,6 +133,50 @@ def test_chunks_cover_the_input(media_dir: Path, tmp_path: Path) -> None:
     assert data["chunks"][-1]["end"] == pytest.approx(54.0, abs=0.3)
     # No chunk exceeds the (safety-scaled) maximum duration.
     assert all(c["duration"] <= 20 * 0.8 + 0.2 for c in data["chunks"])
+
+
+def test_chunk_durations_sum_to_the_input(media_dir: Path, tmp_path: Path) -> None:
+    """The chunks, minus their overlaps, account for the whole input.
+
+    This catches audio lost at the end of a file (the stream-copy cut used to
+    drop ~0.25 s of the last chunk). The video fixture uses hard cuts, so the
+    chunks overlap by one second each and the overlap must be subtracted.
+    """
+    out = tmp_path / "out"
+    assert _run_chunk(media_dir / "video_long.mp4", out, "--max-duration-s", "6") == 0
+    data = _load_manifest(out)
+    chunks = data["chunks"]
+
+    # Overlap between consecutive chunks, from the planned start/end.
+    overlaps = sum(max(0.0, a["end"] - b["start"]) for a, b in pairwise(chunks))
+    measured = sum(_decoded_duration(out / c["name"]) for c in chunks)
+
+    # Each chunk is within DURATION_TOLERANCE_S of its plan, so the total is
+    # within num_chunks * DURATION_TOLERANCE_S of the input length.
+    input_duration = data["input"]["duration"]
+    assert measured - overlaps == pytest.approx(
+        input_duration, abs=len(chunks) * DURATION_TOLERANCE_S
+    )
+
+
+def test_first_and_last_chunk_match_plan(media_dir: Path, tmp_path: Path) -> None:
+    """The first chunk (encoder delay) and the last chunk (end of file) are exact.
+
+    These are the two edges where a wrong cut loses audio: the first chunk
+    must not have its head swallowed by encoder padding, and the last chunk
+    must run to the end of the audio (not stop a frame short).
+    """
+    out = tmp_path / "out"
+    assert _run_chunk(media_dir / "speech_like.wav", out, "--max-duration-s", "20") == 0
+    data = _load_manifest(out)
+    chunks = data["chunks"]
+
+    first, last = chunks[0], chunks[-1]
+    # The last chunk is the one that used to come out 0.25 s short.
+    assert last["end"] == pytest.approx(data["input"]["duration"], abs=0.05)
+    for c in (first, last):
+        measured = _decoded_duration(out / c["name"])
+        assert measured == pytest.approx(c["duration"], abs=DURATION_TOLERANCE_S)
 
 
 def test_video_produces_audio_chunks(media_dir: Path, tmp_path: Path) -> None:
