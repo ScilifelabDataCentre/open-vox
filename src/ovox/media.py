@@ -39,7 +39,7 @@ class MediaInfo:
     """What ffprobe found in a validated input file.
 
     The ``audio_*`` fields describe the *first* audio stream (``0:a:0``), which
-    is the one ovox extracts and sends to the STT endpoint.
+    is the one ovox cuts chunks from and sends to the STT endpoint.
     """
 
     path: Path
@@ -146,7 +146,7 @@ def _media_info(file: Path, data: dict[str, Any]) -> MediaInfo:
             raise InputValidationError(f"Video file has no audio stream: {file}")
         raise InputValidationError(f"No audio stream found in: {file}")
 
-    # The first audio stream is what ovox extracts (ffmpeg -map 0:a:0); report
+    # The first audio stream is what ovox cuts (ffmpeg -map 0:a:0); report
     # its codec, sample rate and channel count for the chunk plan.
     first_audio = next(s for s in streams if s.get("codec_type") == "audio")
 

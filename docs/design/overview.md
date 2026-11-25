@@ -7,7 +7,7 @@ speech-to-text (STT) endpoint, with support for custom transcription models.
 This document gives the big picture and the cross-cutting choices. Details live
 in the other design documents:
 
-- [Audio pipeline](audio-pipeline.md): input validation, audio extraction, chunking.
+- [Audio pipeline](audio-pipeline.md): input validation, chunk planning and cutting.
 - [Transcription](transcription.md): calling the STT endpoint and merging the results.
 - [Testing](testing.md): how the code is tested.
 
@@ -30,13 +30,15 @@ Why direct mode first:
 ```
 input file
   -> validate      (ovox.media)      file exists, readable, non-empty, has an audio stream
-  -> extract       (ovox.audio)      mono 16 kHz MP3 in a private temp dir (for silence detection)
   -> plan chunks   (ovox.plan)       silence detection + chunk plan within endpoint limits
   -> cut chunks    (ovox.audio)      one file per planned chunk, accurate cut re-encoded from the source
   -> transcribe    (STT endpoint)    per chunk, retries, bounded concurrency
   -> merge                           join texts, remove words repeated across overlaps
   -> transcript
 ```
+
+Every stage reads the original file; there is no intermediate full-length
+audio. Chunks are the only audio files a run produces.
 
 `ovox.plan.build_plan` is the single place that decides where the chunks go. It
 is used by every mode of `ovox chunk` and, in due course, by real transcription,
@@ -49,8 +51,8 @@ without doing any transcription, in three modes:
 - **`--dry-run`**: prints the plan and writes nothing — no files, no directory —
   so it is safe to run anywhere.
 
-All intermediate files live in one temp directory per run, which is always
-removed (see [Audio pipeline](audio-pipeline.md#temporary-files)).
+A run produces only the chunk files (and the manifest), all in the output
+directory; there is no intermediate audio to clean up.
 
 ## Cross-cutting decisions
 
@@ -92,7 +94,7 @@ before a long job starts.
 ### Errors
 
 - Each stage raises its own exception type with a message a user can act on
-  (for example `InputValidationError`, `AudioExtractionError`). ffmpeg errors
+  (for example `InputValidationError`, `AudioProcessingError`). ffmpeg errors
   include the last lines of ffmpeg's stderr.
 - The CLI turns these into a short message and a non-zero exit code; tracebacks
   are for unexpected errors only.

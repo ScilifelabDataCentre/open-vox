@@ -56,8 +56,8 @@ _media(d / "tone_with_silence.wav", tone, ("silence", 1), tone)
 _media(d / "video_with_audio.mp4", tone, video=True)
 ```
 
-- Generated audio is **stereo 44.1 kHz**, so the extraction tests prove ovox
-  really converts to mono 16 kHz.
+- Generated audio is **stereo 44.1 kHz**, so the cutting tests prove ovox
+  really converts to mono 16 kHz (see `tests/integration/test_audio.py`).
 - Tones and exact silences make timings predictable, so tests can assert where
   silences and cuts land (with small tolerances for MP3 encoder padding).
 - Invalid inputs (empty file, corrupt file, text file) are written directly.

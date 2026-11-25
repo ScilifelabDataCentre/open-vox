@@ -1,30 +1,32 @@
-"""Audio extraction.
+"""Chunk cutting and audio measurement.
 
-Converts the first audio stream of a media file to a compact, constant-bitrate
-MP3 suitable for sending to an STT endpoint. The sample rate, channel count and
-bitrate are deployment settings (see :mod:`ovox.config`: ``AUDIO_SAMPLE_RATE``,
+Cuts the planned chunks from the original media file and measures audio
+length. Each chunk is re-encoded to the upload format, a compact
+constant-bitrate MP3: the sample rate, channel count and bitrate are
+deployment settings (see :mod:`ovox.config`: ``AUDIO_SAMPLE_RATE``,
 ``AUDIO_CHANNELS``, ``AUDIO_BITRATE_KBPS``); the built-in defaults are mono,
 16 kHz, 64 kbps (about 28.8 MB per hour of audio). Everything runs through
 ffmpeg; no other runtime dependencies.
+
+There is no full-length intermediate MP3: silence detection, duration
+measurement and cutting all read the original file, so a run writes nothing
+but the final chunk files.
 """
 
-import contextlib
 import subprocess
 import tempfile
-from collections.abc import Iterator
 from pathlib import Path
 
 from ovox.media import MediaError
 
-# Extraction normally runs well under realtime. Allow 2x realtime plus a
-# fixed overhead, with a floor for short files and a default when the input
-# duration is unknown.
+# Cutting a chunk, or decoding a file to measure it, normally runs well under
+# realtime. Allow 2x realtime plus a fixed overhead, with a floor for short
+# files and a default when the duration is unknown.
 TIMEOUT_BASE_S = 60.0
 TIMEOUT_PER_SECOND_OF_AUDIO = 2.0
 TIMEOUT_MIN_S = 120.0
 TIMEOUT_DEFAULT_S = 600.0
 
-OUTPUT_NAME = "audio.mp3"
 STDERR_TAIL_LINES = 5
 
 # Built-in defaults for the upload format. They are deployment settings
@@ -36,93 +38,8 @@ DEFAULT_CHANNELS = 1
 DEFAULT_BITRATE_BPS = 64_000  # 64 kbps, about 28.8 MB per hour of audio
 
 
-class AudioExtractionError(MediaError):
-    """Audio could not be extracted from the input file."""
-
-
-@contextlib.contextmanager
-def workdir() -> Iterator[Path]:
-    """Yield a temporary directory that is removed on exit.
-
-    Cleanup runs on success, on exceptions and on Ctrl-C, because
-    KeyboardInterrupt and SystemExit propagate through the context manager.
-    """
-    with tempfile.TemporaryDirectory(prefix="ovox-") as name:
-        yield Path(name)
-
-
-def extract_audio(
-    source: Path,
-    dest_dir: Path,
-    *,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
-    channels: int = DEFAULT_CHANNELS,
-    bitrate_bps: int = DEFAULT_BITRATE_BPS,
-    duration: float | None = None,
-) -> Path:
-    """Extract the first audio stream of *source* as a constant-bitrate MP3.
-
-    The audio is converted to *channels* channel(s) at *sample_rate* Hz and
-    encoded as CBR MP3 at *bitrate_bps*. The result is written to
-    ``dest_dir/audio.mp3`` and its path is returned.
-
-    Args:
-        source: A validated input file (see ovox.media).
-        dest_dir: Directory to write the MP3 into, typically from workdir().
-        sample_rate, channels, bitrate_bps: The upload format. Pass the values
-            resolved from config (see :class:`ovox.config.AudioConfig`) so the
-            encoding and the chunk-size planning agree.
-        duration: Input duration in seconds, used to scale the ffmpeg timeout.
-
-    Raises:
-        AudioExtractionError: ffmpeg failed, timed out, or produced no audio.
-    """
-    output = dest_dir / OUTPUT_NAME
-    timeout = timeout_for(duration)
-    try:
-        command = _ffmpeg_command(source, output, sample_rate, channels, bitrate_bps)
-        result = run_ffmpeg(command, timeout)
-    except subprocess.TimeoutExpired as exc:
-        raise AudioExtractionError(
-            f"ffmpeg timed out after {timeout:.0f}s extracting audio from: {source}"
-        ) from exc
-
-    if result.returncode != 0:
-        raise AudioExtractionError(
-            f"ffmpeg failed while extracting audio from: {source}\n{stderr_tail(result.stderr)}"
-        )
-    if not output.exists() or output.stat().st_size == 0:
-        raise AudioExtractionError(f"ffmpeg produced no audio from: {source}")
-    return output
-
-
-def _ffmpeg_command(
-    source: Path, output: Path, sample_rate: int, channels: int, bitrate_bps: int
-) -> list[str]:
-    # Constant bitrate (CBR), not variable: the size formula in ovox.plan and
-    # ovox.chunking only works because size is predictable from duration.
-    # An absolute path keeps names starting with "-" from being read as options.
-    return [
-        "ffmpeg",
-        "-v",
-        "error",
-        "-nostdin",
-        "-y",
-        "-i",
-        str(source.resolve()),
-        "-map",
-        "0:a:0",
-        "-vn",
-        "-ac",
-        str(channels),
-        "-ar",
-        str(sample_rate),
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        f"{bitrate_bps // 1000}k",
-        str(output),
-    ]
+class AudioProcessingError(MediaError):
+    """The audio could not be cut or measured."""
 
 
 def cut_audio(
@@ -164,11 +81,11 @@ def cut_audio(
             chunk matches what transcription will upload.
 
     Raises:
-        AudioExtractionError: ffmpeg failed, timed out, or produced no audio.
+        AudioProcessingError: ffmpeg failed, timed out, or produced no audio.
     """
     duration = end - start
     if duration <= 0:
-        raise AudioExtractionError(f"Invalid chunk range: {start}s to {end}s")
+        raise AudioProcessingError(f"Invalid chunk range: {start}s to {end}s")
     # Input seek (-ss before -i) is an O(1) seek, so cutting many chunks of a
     # long file is fast; -t then trims to the exact range. Re-encoding makes the
     # cut sample-accurate on every ffmpeg version (see the docstring).
@@ -201,37 +118,37 @@ def cut_audio(
     try:
         result = run_ffmpeg(command, timeout)
     except subprocess.TimeoutExpired as exc:
-        raise AudioExtractionError(
+        raise AudioProcessingError(
             f"ffmpeg timed out after {timeout:.0f}s cutting: {source}"
         ) from exc
     if result.returncode != 0:
-        raise AudioExtractionError(
+        raise AudioProcessingError(
             f"ffmpeg failed while cutting {start}s-{end}s from: {source}\n"
             f"{stderr_tail(result.stderr)}"
         )
     if not output.exists() or output.stat().st_size == 0:
-        raise AudioExtractionError(f"ffmpeg produced no audio cutting: {source}")
+        raise AudioProcessingError(f"ffmpeg produced no audio cutting: {source}")
     return output
 
 
 def decoded_duration(path: str | Path, *, sample_rate: int = DEFAULT_SAMPLE_RATE) -> float:
-    """Measured length of *path* in seconds, by decoding and counting samples.
+    """Measured length of the audio in *path*, in seconds, by decoding samples.
 
     ffprobe's reported (header) duration can disagree with the audio that
     actually decodes: for an MP3 the header includes encoder padding and the
     trailing bit-reservoir, so it can overstate the length (and that
-    overstatement differs between ffmpeg versions). This fully decodes the file
-    to raw PCM and counts the samples, which is the ground truth for how long
-    the chunk really is. Decoding to a fixed *sample_rate* is fine because
-    resampling preserves duration.
+    overstatement differs between ffmpeg versions). This fully decodes the first
+    audio stream to raw PCM and counts the samples, which is the ground truth
+    for how long the audio really is. Decoding to a fixed *sample_rate* is fine
+    because resampling preserves duration.
 
     Args:
-        path: An audio file.
+        path: An audio file, or a video file with an audio stream.
         sample_rate: The rate to decode to; only used to convert the sample
             count back to seconds, so the result is independent of it.
 
     Raises:
-        AudioExtractionError: ffmpeg failed, timed out, or produced no audio.
+        AudioProcessingError: ffmpeg failed, timed out, or produced no audio.
     """
     target = Path(path)
     with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as handle:
@@ -245,6 +162,9 @@ def decoded_duration(path: str | Path, *, sample_rate: int = DEFAULT_SAMPLE_RATE
             "-y",
             "-i",
             str(target.resolve()),
+            "-map",
+            "0:a:0",
+            "-vn",
             "-f",
             "s16le",
             "-ac",
@@ -256,11 +176,11 @@ def decoded_duration(path: str | Path, *, sample_rate: int = DEFAULT_SAMPLE_RATE
         try:
             result = run_ffmpeg(command, TIMEOUT_DEFAULT_S)
         except subprocess.TimeoutExpired as exc:
-            raise AudioExtractionError(
+            raise AudioProcessingError(
                 f"ffmpeg timed out measuring the duration of: {target}"
             ) from exc
         if result.returncode != 0:
-            raise AudioExtractionError(
+            raise AudioProcessingError(
                 f"ffmpeg failed measuring the duration of: {target}\n{stderr_tail(result.stderr)}"
             )
         # s16le mono: two bytes per sample.

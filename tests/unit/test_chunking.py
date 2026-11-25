@@ -266,6 +266,10 @@ def test_detect_silence_command_and_parsing(fake_ffmpeg: FakeFFmpeg, tmp_path: P
 
     command, timeout = fake_ffmpeg.calls[0]
     assert command[0] == "ffmpeg"
+    # Runs on the source file, selecting the first audio stream (so it works on
+    # video sources, and measures the same audio the chunks are cut from).
+    assert command[command.index("-map") + 1] == "0:a:0"
+    assert "-vn" in command
     assert command[-3:] == ["-f", "null", "-"]
     assert f"silencedetect=noise=-30dB:d={chunking.MIN_SILENCE_S}" in command
     assert str(file.resolve()) in command
@@ -287,7 +291,7 @@ def test_detect_silence_probes_duration_when_missing(
 
 def test_detect_silence_bad_probe_output(fake_ffmpeg: FakeFFmpeg, tmp_path: Path) -> None:
     fake_ffmpeg.stdout = "N/A\n"
-    with pytest.raises(chunking.AudioExtractionError, match="duration"):
+    with pytest.raises(chunking.AudioProcessingError, match="duration"):
         detect_silence(tmp_path / "audio.mp3")
 
 
@@ -299,13 +303,13 @@ def test_detect_silence_failure_includes_stderr_tail(
     fake_ffmpeg.returncode = 1
     fake_ffmpeg.stderr = "first line\nlast line"
 
-    with pytest.raises(chunking.AudioExtractionError, match="last line"):
+    with pytest.raises(chunking.AudioProcessingError, match="last line"):
         detect_silence(file, 10.0)
 
 
 def test_detect_silence_propagates_run_ffmpeg_errors(
     fake_ffmpeg: FakeFFmpeg, tmp_path: Path
 ) -> None:
-    fake_ffmpeg.raises = chunking.AudioExtractionError("ffmpeg timed out")
-    with pytest.raises(chunking.AudioExtractionError, match="timed out"):
+    fake_ffmpeg.raises = chunking.AudioProcessingError("ffmpeg timed out")
+    with pytest.raises(chunking.AudioProcessingError, match="timed out"):
         detect_silence(tmp_path / "audio.mp3", 10.0)

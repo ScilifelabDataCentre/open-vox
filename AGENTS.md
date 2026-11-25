@@ -76,7 +76,6 @@ The format you send matters a lot. Compressed mono speech can fit several times 
 Make room for a later upload time limit. Keep the limits together as a per-target setting: maximum file size now, maximum upload time later. An upload time limit then becomes another input to the same maximum-length calculation, based on an assumed upload speed, without changing how splitting works.
 
 
-
 Suggested order:
 Next in line:
 
@@ -90,13 +89,15 @@ b. Local folder: set an environment variable at the folder and skip when it’s 
    stitch). These are used to benchmark direct mode against server mode later and
    to see where time goes (upload, queueing, STT).
 
-## Work to wait with, later (not now):
+## Future work, later (not now):
 Define the job API contract early as an OpenAPI spec from FastAPI,
 so the browser add-on can be developed against a stub in parallel.
 
 Also:
+- Detecting multiple speakers
 - putting ChunkSpec’s fields in a clearer order
 - skipping chunks that are entirely silence
+- Two runs on the same file at once. A lock file in the work folder would prevent this; it can wait until after the beta.
 
 ## Known Issues
 Make a note whether each issue should be addressed soon or delayed.
@@ -118,6 +119,7 @@ Make a note whether each issue should be addressed soon or delayed.
 - Run tests before considering a task done.
 
 ## Don'ts
+- Don't stray from the core task given. Any refactoring or other changes should first be explicitly asked.
 - Don't build server-mode or browser code during this epic.
 - Don't commit real media, transcripts or keys.
 - Don't hard-code a single STT vendor. Keep the endpoint and model configurable

@@ -41,25 +41,16 @@ class FakeAudio:
     def __init__(self, cut_size: int = 1000) -> None:
         self.cut_size = cut_size
         self.cuts: list[tuple[Path, float, float, Path]] = []
-        self.extractions: list[Path] = []
         self.format: tuple[int | None, int | None, int | None] | None = None
-
-    def extract_audio(
-        self,
-        source,
-        dest_dir,
-        *,
-        duration=None,
-        sample_rate=None,
-        channels=None,
-        bitrate_bps=None,
-    ):
-        self.extractions.append(source)
-        self.format = (sample_rate, channels, bitrate_bps)
-        return dest_dir / "audio.mp3"
 
     def cut_audio(self, source, output, start, end, **upload_format):
         output.write_bytes(b"x" * self.cut_size)
+        # The upload format the chunk is encoded at (the invariant under test).
+        self.format = (
+            upload_format.get("sample_rate"),
+            upload_format.get("channels"),
+            upload_format.get("bitrate_bps"),
+        )
         self.cuts.append((source, start, end, output))
         return output
 
@@ -71,7 +62,6 @@ class FakeAudio:
 @pytest.fixture
 def fake_audio(monkeypatch: pytest.MonkeyPatch) -> FakeAudio:
     fake = FakeAudio()
-    monkeypatch.setattr(audio, "extract_audio", fake.extract_audio)
     monkeypatch.setattr(audio, "cut_audio", fake.cut_audio)
     monkeypatch.setattr(audio, "decoded_duration", fake.decoded_duration)
     return fake
@@ -217,27 +207,28 @@ def test_build_plan_reports_input_details(
     assert plan.input["audio_track"] == 0
 
 
-def test_build_plan_encodes_and_plans_at_the_configured_format(
+def test_plan_and_cut_use_the_configured_format(
     tmp_path: Path, fake_audio: FakeAudio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The audio is encoded and the sizes estimated at the same configured rate.
+    """The chunks are encoded and the sizes estimated at the same configured rate.
 
-    This is the invariant the whole feature relies on: extraction and chunk
+    This is the invariant the whole feature relies on: cutting and chunk
     planning must read the same bitrate, or every size estimate is off.
     """
     set_silences(monkeypatch, [])
     info = make_info(tmp_path, duration=10.0)
     audio_config = AudioConfig(sample_rate=48000, channels=2, bitrate_bps=128_000)
     plan = build_plan(info, default_config(), audio_config)
-
-    # Extraction was told to encode at the configured format.
-    assert fake_audio.format == (48000, 2, 128_000)
-    # The plan records that format.
+    # The plan records that format, and the size estimate uses its bitrate.
     assert plan.settings["sample_rate"].value == 48000
     assert plan.settings["channels"].value == 2
     assert plan.settings["bitrate_kbps"].value == 128
-    # The size estimate uses the configured bitrate: 10 s at 128 kbps.
+    # 10 s at 128 kbps.
     assert plan.chunks[0].estimated_size == 10 * 128_000 // 8
+
+    write_chunks(plan, tmp_path / "chunks", audio_config)
+    # Cutting was told to encode at the same configured format.
+    assert fake_audio.format == (48000, 2, 128_000)
 
 
 def test_build_plan_warns_when_no_silence(

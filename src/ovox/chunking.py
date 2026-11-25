@@ -1,7 +1,8 @@
 """Chunk planning for transcription.
 
-Plans how an extracted MP3 is split into pieces that fit the STT endpoint's
-size and duration limits, preferring cuts on silence. Planning and parsing are
+Plans how the audio of a media file is split into pieces that fit the STT
+endpoint's size and duration limits, preferring cuts on silence. Planning and
+parsing are
 pure functions so they can be unit tested without ffmpeg; only
 :func:`detect_silence` runs ffmpeg (with the ``silencedetect`` filter).
 """
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ovox import audio
-from ovox.audio import DEFAULT_BITRATE_BPS, AudioExtractionError
+from ovox.audio import DEFAULT_BITRATE_BPS, AudioProcessingError
 
 # Sensible defaults; every function taking them can be pointed at an
 # endpoint's actual limits.
@@ -72,15 +73,15 @@ def max_chunk_seconds(
 ) -> float:
     """Largest chunk length in seconds allowed by the size and duration limits.
 
-    The MP3 bitrate is known at extraction time (see ovox.audio), so the byte
-    limit converts to seconds exactly. ``safety`` keeps a margin below the
-    endpoint's hard limits.
+    The MP3 bitrate is known at cut time (see ovox.audio), so the byte limit
+    converts to seconds exactly. ``safety`` keeps a margin below the endpoint's
+    hard limits.
 
     Args:
         max_bytes, max_seconds: The endpoint's size and duration limits.
         safety: Fraction of the limits to plan chunks at, in (0, 1].
-        bitrate_bps: The CBR bitrate the audio is encoded at. Pass the same
-            value used to extract the audio (see :class:`ovox.config.AudioConfig`)
+        bitrate_bps: The CBR bitrate the chunks are encoded at. Pass the same
+            value used to cut the audio (see :class:`ovox.config.AudioConfig`)
             so the size estimate matches the real file size.
     """
     if max_bytes <= 0 or max_seconds <= 0:
@@ -192,8 +193,13 @@ def detect_silence(
 ) -> list[Silence]:
     """Run ffmpeg's ``silencedetect`` over *audio_file* and return its silences.
 
+    Runs on the original media file (audio or video), selecting the first audio
+    stream (``-map 0:a:0``) so it measures the same audio the chunks will be cut
+    from. Silence positions are sample-rate independent, so the intervals are the
+    same as if measured on the normalized upload MP3.
+
     Args:
-        audio_file: The extracted MP3 (see ovox.audio.extract_audio).
+        audio_file: The source media file (see ovox.media).
         duration: Length of the audio in seconds. Used to close and clamp
             silence running to the end of the file, and to scale the timeout.
             Probed with ffprobe when not given.
@@ -209,6 +215,9 @@ def detect_silence(
             "-nostdin",
             "-i",
             str(Path(audio_file).resolve()),
+            "-map",
+            "0:a:0",
+            "-vn",
             "-af",
             f"silencedetect=noise={noise}:d={min_silence}",
             "-f",
@@ -218,7 +227,7 @@ def detect_silence(
         timeout,
     )
     if result.returncode != 0:
-        raise AudioExtractionError(
+        raise AudioProcessingError(
             f"ffmpeg failed while detecting silences in: {audio_file}\n"
             f"{audio.stderr_tail(result.stderr)}"
         )
@@ -241,11 +250,11 @@ def _probe_duration(audio_file: str | os.PathLike[str]) -> float:
         PROBE_TIMEOUT_S,
     )
     if result.returncode != 0:
-        raise AudioExtractionError(f"ffprobe failed while reading duration of: {audio_file}")
+        raise AudioProcessingError(f"ffprobe failed while reading duration of: {audio_file}")
     try:
         return float(result.stdout.strip())
     except ValueError as exc:
-        raise AudioExtractionError(
+        raise AudioProcessingError(
             f"Could not read duration from ffprobe output for: {audio_file}"
         ) from exc
 

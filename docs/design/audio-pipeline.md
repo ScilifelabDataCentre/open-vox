@@ -1,4 +1,4 @@
-# Audio pipeline: validation, extraction and chunking
+# Audio pipeline: validation, planning and chunking
 
 Status: current for the first beta. Last updated 2026-11.
 
@@ -15,14 +15,14 @@ Before any processing, the input must:
 
 Each failure has its own clear message: missing file, unreadable file, empty
 file, unsupported or corrupt media, and video without audio. Validation runs
-first so that a bad input fails in under a second instead of after extraction.
+first so that a bad input fails in under a second instead of after processing.
 
-## Audio extraction (`ovox.audio`)
+## The upload format (`ovox.audio`)
 
-The first audio stream of the input is converted to a **constant-bitrate (CBR)
-MP3**. The sample rate, channel count and bitrate are deployment settings in
-the "Audio processing" block of `.env`; the built-in defaults are **mono,
-16 kHz, 64 kbps** (about 28.8 MB per hour of audio).
+Every chunk is sent to the endpoint as a **constant-bitrate (CBR) MP3** cut
+from the original file. The sample rate, channel count and bitrate are
+deployment settings in the "Audio processing" block of `.env`; the built-in
+defaults are **mono, 16 kHz, 64 kbps** (about 28.8 MB per hour of audio).
 
 | Setting | Env var | Default | Reason |
 | --- | --- | --- | --- |
@@ -44,14 +44,11 @@ mono, so many more chunks), FLAC (smaller than WAV but not accepted everywhere),
 Opus (smallest, but endpoint support varies). MP3 is the safe default; the
 format could become configurable per endpoint.
 
-### Temporary files
-
-Planning gets one private temp directory (`workdir()`, based on
-`tempfile.TemporaryDirectory`) holding the extracted audio (used for silence
-detection). It is removed when the plan is built, also on errors and Ctrl-C.
-Chunk files go straight to the output directory. For SIGTERM, the CLI installs
-a handler that raises `SystemExit` so the same cleanup runs. Nothing is written
-next to the user's input file.
+There is **no intermediate full-length audio file**. Everything runs on the
+original input: silence detection, duration measurement and cutting all read
+the source directly, so a run writes nothing but the final chunk files (and,
+optionally, the manifest) to the output directory. Nothing is written next to
+the user's input file.
 
 ## Chunking (`ovox.chunking`)
 
@@ -79,7 +76,7 @@ max_len = min(max_bytes * 8 / bitrate, max_seconds) * safety
 Defaults: 25 MiB, 600 s and a safety factor of 0.8, which gives 480 s chunks
 (the duration limit wins). Point these at the real endpoint's limits.
 
-The extraction and the planning must read the *same* bitrate, so the size
+The cutting and the planning must read the *same* bitrate, so the size
 estimate matches the file actually written. That is why the bitrate is a single
 config value passed to both, not a constant in each module.
 
@@ -99,7 +96,9 @@ how splitting works.
 Planning is a pure function (`plan_chunks`) over the duration and a list of
 silences, so it is fully unit tested without ffmpeg. Silences come from
 ffmpeg's `silencedetect` filter (`detect_silence`; threshold -30 dB, minimum
-0.2 s).
+0.2 s) run on the original file, selecting the first audio stream. Silence
+positions are sample-rate independent, so this finds the same pauses as
+running it on the normalized MP3 — without building that MP3.
 
 For each chunk starting at `start`, with planned end `start + max_len`:
 
@@ -136,15 +135,14 @@ file and re-encoding** it to the upload format (mono, 16 kHz, CBR MP3). The cut
 is positioned with an input seek (`-ss` before `-i`) plus an exact `-t`
 duration, so it lands at the planned sample on every ffmpeg version.
 
-This is deliberately **not** a stream copy (`-c copy`) of the extracted MP3.
-Stream copy can only cut on whole MP3 frames, and because an MP3's trailing
-bit-reservoir and encoder padding hold no decodable samples once you cut into
-them, a copy near the end of the file decodes to *less* audio than its header
-claims (measured ~0.25 s short at 16 kHz). That loss varied between ffmpeg
-versions and would have shifted transcript timestamps and broken resume.
-Re-encoding removes the version dependence; 16 kHz mono MP3 is fast, and
-cutting from the *source* (not the intermediate MP3) keeps the chunk to a
-single generation of lossy compression.
+This is deliberately **not** a stream copy (`-c copy`). Stream copy can only
+cut on whole codec frames, and for an MP3 source the trailing bit-reservoir
+and encoder padding hold no decodable samples once you cut into them, so a
+copy near the end of the file decodes to *less* audio than its header claims
+(measured ~0.25 s short at 16 kHz). That loss varies between ffmpeg versions
+and would shift transcript timestamps and break resume. Re-encoding removes
+the version dependence; 16 kHz mono MP3 is fast, and cutting straight from
+the *source* keeps the chunk to a single generation of lossy compression.
 
 A chunk's real length is measured by **decoding it and counting samples**
 (`decoded_duration`), not by ffprobe's reported (header) duration: for an MP3

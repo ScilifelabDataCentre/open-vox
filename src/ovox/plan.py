@@ -1,14 +1,17 @@
 """Chunk planning and writing.
 
 This is the one place that decides *where* the chunks go. :func:`build_plan`
-does the work (extract audio, detect silence, plan the cuts) and returns a
-:class:`ChunkPlan`; :func:`write_chunks` turns that plan into files. The
-``ovox chunk`` command (``--dry-run``, ``--plan-only`` and a real run) all call
-the same :func:`build_plan`, and real transcription will reuse it, so the plan
-a preview prints is always an accurate description of what would be uploaded.
+does the work (detect silence, plan the cuts) and returns a :class:`ChunkPlan`;
+:func:`write_chunks` turns that plan into files. The ``ovox chunk`` command
+(``--dry-run``, ``--plan-only`` and a real run) all call the same
+:func:`build_plan`, and real transcription will reuse it, so the plan a preview
+prints is always an accurate description of what would be uploaded.
 
 Planning is pure given its inputs (see :mod:`ovox.chunking`); the ffmpeg steps
-(extraction, silence detection, cutting) are the only I/O.
+(silence detection, cutting) run on the original file and are the only I/O. No
+full-length intermediate MP3 is built: silence is detected on the source
+(identical to detecting it on the normalized MP3) and each chunk is cut and
+re-encoded from the source.
 """
 
 from __future__ import annotations
@@ -143,8 +146,9 @@ def build_plan(
         info: Validated media info (see :func:`ovox.media.validate_input`).
         chunk_config: Per-target limits from config/env.
         audio_config: The upload format (sample rate, channels, bitrate). The
-            same values are used to encode the audio and to estimate its size,
-            so the plan and the files agree.
+            bitrate sets the size estimates, so they match what
+            :func:`write_chunks` encodes; the sample rate is passed on to the
+            duration fallback.
         max_bytes, max_seconds, overlap, search_window, safety: Optional
             overrides (normally from CLI flags) that win over config.
         split_method: ``"silence"`` (default) or ``"fixed"``. ``"fixed"`` hard
@@ -159,36 +163,31 @@ def build_plan(
     if split_method not in ("silence", "fixed"):
         raise ValueError(f"split_method must be 'silence' or 'fixed', got: {split_method!r}")
 
-    with audio.workdir() as d:
-        mp3 = audio.extract_audio(
-            info.path,
-            d,
-            duration=info.duration,
-            sample_rate=audio_config.sample_rate,
-            channels=audio_config.channels,
-            bitrate_bps=audio_config.bitrate_bps,
-        )
-        duration = info.duration
-        if duration is None:
-            duration = chunking._probe_duration(mp3)
-        if duration <= 0:
-            raise ValueError(f"No audio to split: {info.path}")
+    # Everything runs on the original file: silence detection and cutting both
+    # read the source directly, so no full-length intermediate MP3 is built
+    # (which would be a full decode + encode just to be thrown away).
+    duration = info.duration
+    if duration is None:
+        # The container did not report a length; count the decoded samples.
+        # This is slow, but it is the fallback for containers ffprobe cannot
+        # time (e.g. some live streams).
+        duration = audio.decoded_duration(info.path, sample_rate=audio_config.sample_rate)
+    if duration <= 0:
+        raise ValueError(f"No audio to split: {info.path}")
 
-        silences = detect_silence(mp3, duration) if split_method == "silence" else []
-        specs = plan_chunks(
-            duration,
-            silences,
-            max_bytes=max_bytes if max_bytes is not None else chunk_config.max_chunk_size_bytes,
-            max_seconds=max_seconds
-            if max_seconds is not None
-            else chunk_config.max_chunk_duration_s,
-            overlap=overlap if overlap is not None else chunking.DEFAULT_OVERLAP_S,
-            search_window=search_window
-            if search_window is not None
-            else chunking.DEFAULT_SEARCH_WINDOW_S,
-            safety=safety if safety is not None else chunk_config.safety,
-            bitrate_bps=audio_config.bitrate_bps,
-        )
+    silences = detect_silence(info.path, duration) if split_method == "silence" else []
+    specs = plan_chunks(
+        duration,
+        silences,
+        max_bytes=max_bytes if max_bytes is not None else chunk_config.max_chunk_size_bytes,
+        max_seconds=max_seconds if max_seconds is not None else chunk_config.max_chunk_duration_s,
+        overlap=overlap if overlap is not None else chunking.DEFAULT_OVERLAP_S,
+        search_window=search_window
+        if search_window is not None
+        else chunking.DEFAULT_SEARCH_WINDOW_S,
+        safety=safety if safety is not None else chunk_config.safety,
+        bitrate_bps=audio_config.bitrate_bps,
+    )
 
     prefix = info.path.stem
     entries = _entries(specs, prefix, silences, audio_config.bitrate_bps)

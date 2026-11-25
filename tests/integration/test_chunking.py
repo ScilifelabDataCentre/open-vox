@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from ovox.audio import extract_audio, workdir
 from ovox.chunking import detect_silence, plan_chunks
 
 
@@ -43,14 +42,12 @@ def test_plan_chunks_from_real_silence(media_dir: Path) -> None:
     assert specs[1].end == 3.0
 
 
-def test_extracted_mp3_is_cut_on_its_pauses(media_dir: Path) -> None:
-    # The real pipeline runs silencedetect on the extracted MP3, whose encoder
-    # padding shifts times slightly. 54 s with a pause every 9 s, max 20 s chunks.
-    with workdir() as d:
-        mp3 = extract_audio(media_dir / "speech_like.wav", d)
-        silences = detect_silence(mp3)
-        duration = 54.0
-        specs = plan_chunks(duration, silences, max_len=20.0, search_window=10.0)
+def test_source_is_cut_on_its_pauses(media_dir: Path) -> None:
+    # The real pipeline runs silencedetect on the source file, whose silences
+    # feed the cut points. 54 s with a pause every 9 s, max 20 s chunks.
+    silences = detect_silence(media_dir / "speech_like.wav")
+    duration = 54.0
+    specs = plan_chunks(duration, silences, max_len=20.0, search_window=10.0)
 
     assert len(specs) == 3
     assert specs[-1].end == pytest.approx(duration)
