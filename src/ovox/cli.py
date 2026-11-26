@@ -6,18 +6,21 @@ Usage::
     ovox version [--json]
     ovox check [--json]
     ovox chunk <file> --output-dir <dir> [--dry-run | --plan-only] [--json]
+    ovox transcribe <file> [-o OUT.txt] [--dry-run] [--resume] [--json]
 
-New commands (e.g. ``transcribe``) are added as subcommands in
-``build_parser`` and dispatched from ``main``.
+New commands are added as subcommands in ``build_parser`` and dispatched from
+``main``.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import platform
 import re
+import signal
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -229,6 +232,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chunk_parser.set_defaults(handler=_cmd_chunk)
 
+    # Add transcribe command: the direct-mode end-to-end run.
+    transcribe_parser = subparsers.add_parser(
+        "transcribe",
+        allow_abbrev=False,
+        help="transcribe an audio or video file to text",
+        description=(
+            "Transcribe an audio or video file with the configured STT endpoint. "
+            "The file is split into chunks that fit the endpoint's limits, each chunk "
+            "is sent with retries, and the results are merged into a .txt transcript "
+            "next to the input (or -o). Chunk audio, the manifest and the per-chunk "
+            "results are kept in a work folder next to the input, so an interrupted "
+            "run can be resumed with --resume (or simply re-run)."
+        ),
+    )
+    transcribe_parser.add_argument("file", metavar="FILE", help="audio or video file to transcribe")
+    transcribe_parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        metavar="TXT",
+        help="write the transcript to this .txt file (default: next to the input)",
+    )
+    transcribe_parser.add_argument(
+        "--workdir",
+        type=Path,
+        metavar="DIR",
+        help="directory for the chunk files, manifest and chunk results "
+        "(default: a hidden folder next to the input)",
+    )
+    transcribe_mode = transcribe_parser.add_mutually_exclusive_group()
+    transcribe_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="run the local steps (validate, cut chunks) and print the plan, "
+        "without making any STT requests",
+    )
+    transcribe_mode.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse the chunks a previous run cut (check that the source and "
+        "settings still match) and only transcribe the chunks without a result",
+    )
+    transcribe_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the result (or the plan, with --dry-run) as JSON; "
+        "progress goes to stderr in both modes",
+    )
+    transcribe_parser.set_defaults(handler=_cmd_transcribe)
+
     return parser
 
 
@@ -405,6 +458,146 @@ def _cmd_chunk(args: argparse.Namespace) -> int:
     return 0
 
 
+def print_transcribe_result(result: Mapping[str, Any], *, as_json: bool) -> None:
+    """Print the outcome of a transcription run to stdout.
+
+    JSON mode prints the result dict as-is. Text mode prints the output files
+    and a short summary (including per-stage timings, which is what the
+    direct-mode benchmarks are built from).
+    """
+    if as_json:
+        # default=str renders the output paths; the text modes show them as-is.
+        print(json.dumps(result, indent=2, default=str))
+        return
+    print(f"Transcript: {result['text_file']}")
+    segments_file = result.get("segments_file")
+    if segments_file is not None:
+        print(f"Segments:   {segments_file}")
+    print(
+        f"Chunks:   {result['chunks_transcribed']} transcribed this run, "
+        f"{result['chunks_total']} total"
+    )
+    if result.get("resumed"):
+        print(f"Workdir:  {result['workdir']} (reused)")
+    else:
+        print(f"Workdir:  {result['workdir']}")
+    timings: Mapping[str, float] = result.get("timings", {})
+    if timings:
+        parts = [f"{name}={seconds:.2f}s" for name, seconds in timings.items()]
+        total = sum(timings.values())
+        print(f"Timings:  {' '.join(parts)} (total {total:.2f}s)")
+
+
+def _cmd_transcribe(args: argparse.Namespace) -> int:
+    """Handle the transcribe command (direct mode, end to end).
+
+    ``--dry-run`` runs the local stages (validate, cut) and prints the plan,
+    making no STT requests; a later real run resumes from the same work
+    folder. A normal run sends the missing chunks to the endpoint and writes
+    the transcript. Failures are actionable messages with non-zero exit codes:
+    authentication errors point at ``ovox check``, and an interrupted run says
+    how many chunks are done and how to resume.
+    """
+    from ovox.config import AudioConfig, ChunkConfig, SttConfig, TranscribeConfig
+    from ovox.media import MediaError
+    from ovox.pipeline import PipelineError, WorkdirError, prepare_for_dry_run, transcribe_file
+
+    def _configs() -> tuple[ChunkConfig, AudioConfig, SttConfig, TranscribeConfig]:
+        return (
+            ChunkConfig.from_env(),
+            AudioConfig.from_env(),
+            SttConfig.from_env(),
+            TranscribeConfig.from_env(),
+        )
+
+    try:
+        if args.dry_run:
+            chunk_config, audio_config, stt, _ = _configs()
+            result = prepare_for_dry_run(
+                args.file,
+                chunk_config=chunk_config,
+                audio_config=audio_config,
+                stt=stt,
+                workdir=args.workdir,
+                resume=args.resume,
+            )
+            if args.json:
+                print(json.dumps(result["plan"], indent=2))
+            else:
+                # mode="real" keeps the plan printer's closing note off: unlike
+                # ovox chunk --dry-run, this dry run *does* write the chunks
+                # and the manifest (into the work folder, for the resume).
+                print_chunk_plan_from_dict(result["plan"], mode="real")
+                print(
+                    f"Chunks already transcribed: {result['chunks_transcribed']}"
+                    f"/{result['chunks_transcribed'] + result['chunks_pending']}"
+                )
+                print(f"Workdir: {result['workdir']}")
+                print("Dry run: no STT requests were made. Run without --dry-run to transcribe.")
+            return 0
+        chunk_config, audio_config, stt, transcribe_config = _configs()
+        result = transcribe_file(
+            args.file,
+            chunk_config=chunk_config,
+            audio_config=audio_config,
+            stt=stt,
+            transcribe_config=transcribe_config,
+            workdir=args.workdir,
+            output=args.output,
+            resume=args.resume,
+        )
+    except MediaError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except (WorkdirError, PipelineError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # Invalid deployment settings (e.g. an impossible STT_MAX_CONCURRENCY).
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print_transcribe_result(result, as_json=args.json)
+    return 0
+
+
+def print_chunk_plan_from_dict(plan: Mapping[str, Any], *, mode: str) -> None:
+    """Print a plan dict (as read from the manifest) the way a live plan is
+    printed, so a dry run of ``ovox transcribe`` matches ``ovox chunk``."""
+    from ovox.plan import ChunkEntry, ChunkPlan, Setting
+
+    entries = [
+        ChunkEntry(
+            index=c["index"],
+            start=c["start"],
+            end=c["end"],
+            duration=c["duration"],
+            estimated_size=c["estimated_size"],
+            name=c["name"],
+            reason=c.get("reason", ""),
+            overlap_before=c.get("overlap_before", 0.0),
+            actual_size=c.get("actual_size"),
+            actual_duration=c.get("actual_duration"),
+        )
+        for c in plan["chunks"]
+    ]
+    settings = {
+        name: Setting(
+            value=s.get("value"), source=str(s.get("source", "")), origin=str(s.get("origin", ""))
+        )
+        for name, s in plan["settings"].items()
+    }
+    live = ChunkPlan(
+        input=dict(plan["input"]),
+        settings=settings,
+        chunks=entries,
+        warnings=list(plan.get("warnings", [])),
+        totals=dict(plan.get("totals", {})),
+        split_method=str(plan.get("split_method", "silence")),
+    )
+    print_chunk_plan(live, mode=mode, as_json=False)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the ovox CLI and return a process exit code."""
     parser = build_parser()
@@ -415,11 +608,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    # SIGTERM (e.g. from a job manager) is turned into SystemExit so the
+    # cleanup that runs through the normal exit path (work folders, temp
+    # files, in-flight requests) also runs when the process is killed.
+    def _term(signum: int, _frame: Any) -> None:
+        raise SystemExit(143)
+
+    with contextlib.suppress(ValueError, OSError):
+        # Not on the main thread (tests) or the platform has no SIGTERM.
+        signal.signal(signal.SIGTERM, _term)
+
     try:
         result: int = handler(args)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        print("Interrupted (signal).", file=sys.stderr)
+        return code
     return result
 
 

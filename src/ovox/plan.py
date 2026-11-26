@@ -20,7 +20,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from ovox import audio, chunking
 from ovox.audio import DEFAULT_BITRATE_BPS
@@ -54,11 +54,13 @@ class Setting:
 class ChunkEntry:
     """One planned (and, after writing, actual) chunk.
 
-    ``start``, ``end`` and ``duration`` describe the chunk as *planned*;
-    ``actual_size`` and ``actual_duration`` describe the file as *written*
-    (both ``None`` until the chunk has been cut). ``actual_duration`` is
-    measured by decoding the written file, so the manifest matches what is on
-    disk rather than what an MP3 header claims.
+    ``start``, ``end``, ``duration`` and ``overlap_before`` describe the chunk
+    as *planned* (``overlap_before`` is how many seconds at its start repeat
+    the tail of the previous chunk: 0 after a silence cut); ``actual_size``
+    and ``actual_duration`` describe the file as *written* (both ``None``
+    until the chunk has been cut). ``actual_duration`` is measured by decoding
+    the written file, so the manifest matches what is on disk rather than what
+    an MP3 header claims.
     """
 
     index: int
@@ -68,6 +70,7 @@ class ChunkEntry:
     estimated_size: int
     name: str
     reason: str
+    overlap_before: float = 0.0
     actual_size: int | None = None
     actual_duration: float | None = None
 
@@ -77,6 +80,7 @@ class ChunkEntry:
             "start": self.start,
             "end": self.end,
             "duration": self.duration,
+            "overlap_before": self.overlap_before,
             "estimated_size": self.estimated_size,
             "actual_size": self.actual_size,
             "actual_duration": self.actual_duration,
@@ -135,6 +139,7 @@ def build_plan(
     search_window: float | None = None,
     safety: float | None = None,
     split_method: str | None = None,
+    model: str | None = None,
 ) -> ChunkPlan:
     """Decide where the chunks of *info* go and return the plan.
 
@@ -153,6 +158,8 @@ def build_plan(
             overrides (normally from CLI flags) that win over config.
         split_method: ``"silence"`` (default) or ``"fixed"``. ``"fixed"`` hard
             cuts at the maximum length and never looks for silence.
+        model: The STT model the run uses; recorded in the manifest so a
+            resume can check the settings still match.
 
     Raises:
         ovox.media.MediaError: ffmpeg/ffprobe failed.
@@ -191,6 +198,8 @@ def build_plan(
 
     prefix = info.path.stem
     entries = _entries(specs, prefix, silences, audio_config.bitrate_bps)
+    for entry, spec in zip(entries, specs, strict=True):
+        entry.overlap_before = spec.overlap_before
     settings = _settings(
         chunk_config,
         audio_config,
@@ -204,7 +213,7 @@ def build_plan(
     warnings = _warnings(info, entries, silences, split_method)
 
     return ChunkPlan(
-        input=_input_dict(info, duration),
+        input=_input_dict(info, duration, model),
         settings=settings,
         chunks=entries,
         warnings=warnings,
@@ -268,12 +277,72 @@ def plan_manifest_text(plan: ChunkPlan) -> str:
     return json.dumps(plan.to_dict(), indent=2)
 
 
+def plan_from_dict(data: dict[str, Any]) -> ChunkPlan:
+    """Rebuild a :class:`ChunkPlan` from its manifest dict.
+
+    Used by resume: a later run reads the manifest instead of re-planning, so
+    it transcribes exactly the chunks the first run cut. A manifest written by
+    an older ovox (without ``overlap_before``) is read back with a zero
+    overlap for every chunk, which only affects the merge (no dedupe), never
+    which audio is sent.
+    """
+    chunks = [
+        ChunkEntry(
+            index=int(c["index"]),
+            start=float(c["start"]),
+            end=float(c["end"]),
+            duration=float(c["duration"]),
+            estimated_size=int(c["estimated_size"]),
+            name=str(c["name"]),
+            reason=str(c.get("reason", "")),
+            overlap_before=float(c.get("overlap_before", 0.0)),
+            actual_size=None if c.get("actual_size") is None else int(c["actual_size"]),
+            actual_duration=(
+                None if c.get("actual_duration") is None else float(c["actual_duration"])
+            ),
+        )
+        for c in data["chunks"]
+    ]
+    settings = {
+        name: Setting(
+            value=s.get("value"),
+            source=str(s.get("source", "")),
+            origin=str(s.get("origin", "")),
+        )
+        for name, s in data["settings"].items()
+    }
+    return ChunkPlan(
+        input=dict(data["input"]),
+        settings=settings,
+        chunks=chunks,
+        warnings=list(data.get("warnings", [])),
+        totals=dict(data.get("totals", {})),
+        split_method=str(data.get("split_method", "silence")),
+    )
+
+
 # --- internals ------------------------------------------------------------------
 
 
-def _input_dict(info: MediaInfo, duration: float) -> dict[str, object]:
+def _input_dict(info: MediaInfo, duration: float, model: str | None) -> dict[str, object]:
+    # The size and mtime of the source at plan time let a later run tell
+    # "the same file" from "a re-recorded file with the same name": the chunk
+    # result files are keyed by chunk index, so reusing them for a different
+    # recording would silently mix two transcripts.
+    try:
+        stat = info.path.stat()
+        size: int | None = stat.st_size
+        mtime: float | None = stat.st_mtime
+    except OSError:
+        size, mtime = None, None
     return {
         "file": str(info.path),
+        # Resolved absolute path: the input may be given as a relative path,
+        # and a later resume (from another directory) must find the same file.
+        "path": str(info.path.resolve()),
+        "size": size,
+        "mtime": mtime,
+        "model": model,
         "format": info.format_name,
         "codec": info.audio_codec,
         "duration": duration,

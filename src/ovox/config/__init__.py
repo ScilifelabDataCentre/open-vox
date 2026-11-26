@@ -217,6 +217,60 @@ class ChunkConfig:
         )
 
 
+# Defaults for TranscribeConfig, kept here so the config and the API client
+# agree on what "the default" means.
+DEFAULT_MAX_CONCURRENCY = 4
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_BACKOFF_BASE_S = 1.0
+DEFAULT_BACKOFF_CAP_S = 60.0
+
+
+@dataclass(frozen=True)
+class TranscribeConfig:
+    """How ovox talks to the STT endpoint during transcription.
+
+    The retry settings bound how ovox retries a failing chunk request (see
+    ``ovox.api``): at most ``max_retries`` retries after the first attempt, with
+    capped exponential backoff (full jitter) between attempts. The concurrency
+    setting bounds how many chunks are sent in parallel.
+    """
+
+    max_concurrency: int
+    max_retries: int
+    backoff_base_s: float
+    backoff_cap_s: float
+
+    @classmethod
+    def from_env(cls) -> TranscribeConfig:
+        """Create a TranscribeConfig from environment variables, with defaults.
+
+        Raises:
+            ValueError: a value is out of range.
+        """
+        max_concurrency = _get_env_int("STT_MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY)
+        max_retries = _get_env_int("STT_MAX_RETRIES", DEFAULT_MAX_RETRIES)
+        backoff_base_s = _get_env_float("STT_BACKOFF_BASE_S", DEFAULT_BACKOFF_BASE_S)
+        backoff_cap_s = _get_env_float("STT_BACKOFF_CAP_S", DEFAULT_BACKOFF_CAP_S)
+
+        if max_concurrency <= 0:
+            raise ValueError(f"STT_MAX_CONCURRENCY must be positive, got: {max_concurrency}")
+        if max_retries < 0:
+            raise ValueError(f"STT_MAX_RETRIES must be >= 0, got: {max_retries}")
+        if backoff_base_s <= 0:
+            raise ValueError(f"STT_BACKOFF_BASE_S must be positive, got: {backoff_base_s}")
+        if backoff_cap_s < backoff_base_s:
+            raise ValueError(
+                f"STT_BACKOFF_CAP_S must be >= STT_BACKOFF_BASE_S, "
+                f"got: {backoff_cap_s} < {backoff_base_s}"
+            )
+        return cls(
+            max_concurrency=max_concurrency,
+            max_retries=max_retries,
+            backoff_base_s=backoff_base_s,
+            backoff_cap_s=backoff_cap_s,
+        )
+
+
 @dataclass
 class Config:
     """Configuration for ovox."""
@@ -224,6 +278,7 @@ class Config:
     stt: SttConfig
     chunk: ChunkConfig
     audio: AudioConfig
+    transcribe: TranscribeConfig
 
     @classmethod
     def from_env(cls) -> Config:
@@ -232,4 +287,5 @@ class Config:
             stt=SttConfig.from_env(),
             chunk=ChunkConfig.from_env(),
             audio=AudioConfig.from_env(),
+            transcribe=TranscribeConfig.from_env(),
         )

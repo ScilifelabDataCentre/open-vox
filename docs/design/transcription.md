@@ -1,4 +1,4 @@
-# Transcription: STT endpoint, retries and merging
+# Transcription: STT endpoint, retries, merging and the pipeline
 
 Status: current for the first beta. Last updated 2026-11.
 
@@ -11,21 +11,29 @@ chunks are made.
 ovox targets an **OpenAI-compatible transcription endpoint**
 (`POST .../audio/transcriptions`):
 
-- multipart form upload with `file`, `model` and optionally `language`;
+- multipart form upload with just `file` and `model` — ovox deliberately
+  sends a **plain request**, with no `response_format=verbose_json` or
+  `timestamp_granularities[]`. Voxtral on vLLM does not provide timestamps,
+  and Open WebUI silently drops options its model does not support, so asking
+  for them would only make the result depend on the gateway's behaviour. The
+  beta is text-only for that reason;
 - bearer-token authentication;
-- JSON response with a `text` field.
+- JSON response with a `text` field. Whatever extra fields the endpoint does
+  return (`segments`, `words`, a speaker field, ...) are stored untouched in
+  the chunk's result file and used when present (see below).
 
 Why: this API shape is supported by OpenAI, many hosted providers, and
 self-hosted servers for Whisper-style and custom models. Targeting it lets users
 switch between hosted and their own models by changing the URL, model name and
 key, which is the core of "custom transcription models".
 
-Everything endpoint-specific lives in one function that sends a single request.
-Supporting a different API later means replacing that function, not the
-retry, concurrency or merge logic.
+Everything endpoint-specific lives in one function (`STTClient.transcribe_file`)
+that sends a single request. Supporting a different API later means replacing
+that function, not the retry, concurrency or merge logic.
 
-The multipart upload is built with the standard library (see "No runtime
-dependencies" in the [overview](overview.md)).
+The multipart upload is built with `httpx` (a small, pinned dependency for
+HTTP; see "No runtime Python dependencies" in the
+[overview](overview.md)).
 
 ## Checking the configuration
 
@@ -103,9 +111,53 @@ This is a text-only heuristic. It can miss a duplicate if the model transcribes
 the overlap differently in the two chunks, which leaves a repeated word or two.
 Since most cuts land on silence, this is rare.
 
-Possible improvement: request word or segment timestamps (`verbose_json`) and
-drop words that start inside the overlap. That makes the merge exact and also
-enables subtitle output (SRT/VTT).
+### Timestamps are a bonus
+
+The request does not ask for timestamps, so the beta is text-only. But when an
+endpoint *does* return `segments` (or `words`) in its reply — some hosts do —
+the values are stored in the chunk's result file and a
+`<input>.segments.json` is written next to the transcript, with each chunk's
+start time added to its segment times (a global timeline, in seconds from the
+start of the file). That is what subtitle output (SRT/VTT) will build on.
+Longer term: ask for timestamps to be passed through the gateway, and then
+request them explicitly and drop overlap words by time instead of by matching.
+
+## The pipeline and the work folder
+
+`ovox transcribe` (see `ovox.pipeline.transcribe_file`) is the direct-mode
+core, and the CLI is a thin wrapper:
+
+```
+validate (ovox.media)
+  -> plan + cut chunks (ovox.plan, ovox.audio)   into the work folder
+  -> transcribe the missing chunks (ovox.api)    bounded concurrency, retries
+  -> merge (ovox.stitch)                          -> <input>.txt (+ .segments.json)
+```
+
+Everything a run needs is kept together in one **work folder** next to the
+input (`.ovox-<stem>-<hash>/`, or `--workdir`): the chunk audio files, the
+manifest (`ovox-chunk-manifest.json`, written once and **never changed
+afterwards**), and one result file per chunk (`chunk_NNN.json`).
+
+- **Progress is the result files.** A chunk is "done" when its
+  `chunk_NNN.json` exists and parses; that file holds the reply, the model and
+  endpoint it was asked with, written via `.tmp` + atomic rename so a kill can
+  never leave a half-written file behind.
+- **Resume** is "read the manifest, check the source and the settings match,
+  transcribe the chunks without a result file". `--resume` states it
+  explicitly (and skips re-planning); an ordinary re-run of the same command
+  also picks the folder up. A mismatch (different file, or changed limits /
+  upload format / model) fails with a message telling the user to delete the
+  work folder.
+- **`--dry-run`** runs all the local stages (validate, plan, cut) into the
+  work folder and prints the plan — chunk count and lengths, and how many are
+  already transcribed — but makes no STT requests. A later real run resumes
+  from it.
+- **`-o`** chooses the transcript path (default: `<input>.txt` next to the
+  input). Progress and the resume note go to **stderr**; stdout carries the
+  result (or the plan, `--json`).
+- A `SIGTERM` is turned into a clean exit in the CLI, so temp/work cleanup
+  runs when the process is killed, not only on Ctrl-C.
 
 ## Open questions
 

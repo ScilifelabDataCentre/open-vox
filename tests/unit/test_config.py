@@ -9,6 +9,7 @@ from ovox.config import (
     ChunkConfig,
     Config,
     SttConfig,
+    TranscribeConfig,
     _get_env_var,
     _get_optional_env_var,
 )
@@ -111,6 +112,10 @@ _DEPLOYMENT_VARS = (
     "CHUNK_MAX_SIZE_BYTES",
     "CHUNK_MAX_DURATION_S",
     "CHUNK_SAFETY",
+    "STT_MAX_CONCURRENCY",
+    "STT_MAX_RETRIES",
+    "STT_BACKOFF_BASE_S",
+    "STT_BACKOFF_CAP_S",
 )
 
 
@@ -241,3 +246,63 @@ def test_config_includes_audio(stt_env: dict[str, str], clean_deployment_env) ->
 
     assert isinstance(config.audio, AudioConfig)
     assert config.audio.bitrate_bps == 64_000  # default with the deployment vars cleared
+
+
+# --- TranscribeConfig ----------------------------------------------------------
+
+
+def test_transcribe_config_defaults(clean_deployment_env) -> None:
+    transcribe = TranscribeConfig.from_env()
+
+    assert transcribe.max_concurrency == 4
+    assert transcribe.max_retries == 5
+    assert transcribe.backoff_base_s == 1.0
+    assert transcribe.backoff_cap_s == 60.0
+
+
+def test_transcribe_config_reads_env(clean_deployment_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STT_MAX_CONCURRENCY", "2")
+    monkeypatch.setenv("STT_MAX_RETRIES", "0")
+    monkeypatch.setenv("STT_BACKOFF_BASE_S", "0.5")
+    monkeypatch.setenv("STT_BACKOFF_CAP_S", "30")
+
+    transcribe = TranscribeConfig.from_env()
+
+    assert transcribe.max_concurrency == 2
+    assert transcribe.max_retries == 0
+    assert transcribe.backoff_base_s == 0.5
+    assert transcribe.backoff_cap_s == 30.0
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        pytest.param("STT_MAX_CONCURRENCY", "0", id="zero-concurrency"),
+        pytest.param("STT_MAX_CONCURRENCY", "-1", id="negative-concurrency"),
+        pytest.param("STT_MAX_RETRIES", "-1", id="negative-retries"),
+        pytest.param("STT_BACKOFF_BASE_S", "0", id="zero-base"),
+    ],
+)
+def test_transcribe_config_rejects_out_of_range(
+    clean_deployment_env, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        TranscribeConfig.from_env()
+
+
+def test_transcribe_config_rejects_cap_below_base(
+    clean_deployment_env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STT_BACKOFF_BASE_S", "10")
+    monkeypatch.setenv("STT_BACKOFF_CAP_S", "5")
+
+    with pytest.raises(ValueError, match="STT_BACKOFF_CAP_S"):
+        TranscribeConfig.from_env()
+
+
+def test_config_includes_transcribe(stt_env: dict[str, str], clean_deployment_env) -> None:
+    config = Config.from_env()
+
+    assert isinstance(config.transcribe, TranscribeConfig)

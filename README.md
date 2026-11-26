@@ -163,5 +163,23 @@ transcription is done.
   --json      Print the plan as JSON (its content is the manifest).
 --dry-run and --plan-only are mutually exclusive.
 
+ovox transcribe <file>
+Transcribe an audio or video file end to end: split it into chunks that fit
+the STT endpoint's limits, send each chunk with retries and bounded
+concurrency, and merge the results into a .txt transcript next to the input.
+The chunk audio, the manifest and one result file per chunk are kept in a
+work folder next to the input (.ovox-<name>-<hash>/), so an interrupted run
+can be resumed.
+  -o, --output  Write the transcript to this .txt file (default: next to the input).
+  --workdir DIR Use this directory as the work folder.
+  --dry-run     Run the local steps (validate, cut) into the work folder and
+                print the plan, without making any STT requests.
+  --resume      Reuse the chunks a previous run cut (checking that the source
+                and settings still match) and only transcribe the chunks
+                without a result.
+  --json        Print the result (or the plan, with --dry-run) as JSON,
+                including per-stage timings; progress goes to stderr.
+--dry-run and --resume are mutually exclusive.
+
 ovox with no arguments shows help.
 ```

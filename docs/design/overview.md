@@ -41,18 +41,25 @@ Every stage reads the original file; there is no intermediate full-length
 audio. Chunks are the only audio files a run produces.
 
 `ovox.plan.build_plan` is the single place that decides where the chunks go. It
-is used by every mode of `ovox chunk` and, in due course, by real transcription,
-so the plan a preview prints is always an accurate description of what would be
-uploaded. `ovox chunk` splits a file into chunks that fit the endpoint's limits,
-without doing any transcription, in three modes:
+is used by every mode of `ovox chunk` and by `ovox transcribe`, so the plan a
+preview prints is always an accurate description of what would be uploaded.
+`ovox chunk` splits a file into chunks that fit the endpoint's limits, without
+doing any transcription, in three modes:
 
 - **real** (default): writes the chunks plus a JSON manifest to the output dir.
 - **`--plan-only`**: writes just the manifest, no chunks.
 - **`--dry-run`**: prints the plan and writes nothing — no files, no directory —
   so it is safe to run anywhere.
 
-A run produces only the chunk files (and the manifest), all in the output
-directory; there is no intermediate audio to clean up.
+`ovox transcribe` runs the whole pipeline and keeps its work — chunk audio,
+manifest, one result file per chunk — in a **work folder** next to the input
+(`.ovox-<stem>-<hash>/`, or `--workdir`), so an interrupted run resumes from
+it; see [Transcription](transcription.md#the-pipeline-and-the-work-folder).
+Its `--json` result carries per-stage timings (probe, plan/cut, STT, merge)
+for benchmarking direct mode against server mode later.
+
+A run produces only the chunk files (and the manifest/result files), all in
+the output or work directory; there is no intermediate audio to clean up.
 
 ## Cross-cutting decisions
 
