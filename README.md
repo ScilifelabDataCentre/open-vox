@@ -41,7 +41,7 @@ When starting new work, bump the appropriate version in:
 - ./src/ovox/__init__.py
 Keep these two in sync (checked by tests/test_version.py)
 
-### Git flow
+### Git workflow
 
 Create feature branch from main:
 ```bash
@@ -53,6 +53,11 @@ git checkout -b AIS-<nr>-<branch-task>
 
 # ... do work ...
 
+# run quality gate checks:
+chmod +x ./scripts/check.sh
+./scripts/check.sh
+
+# or run each check individually:
 # format
 ruff format .    # rewrites files in place
 # lint
