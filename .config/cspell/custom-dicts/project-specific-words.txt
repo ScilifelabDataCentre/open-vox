@@ -5,10 +5,12 @@
 # 
 # One word per line, in alphabetical order.
 # ---
+behavior
 Berserkers
 Berzelius
 Bitwarden
 citability
+dedupe
 Distributables
 Dockerfiles
 downmixes
@@ -25,6 +27,7 @@ lycheecache
 lycheeignore
 mdlint
 Miarka
+mismerging
 MSBFS
 nerdctl
 ovox
@@ -40,6 +43,7 @@ silencedetect
 skipif
 trivy
 unparsable
+untranscribed
 voxtral
 Voxtral
 Zenodo

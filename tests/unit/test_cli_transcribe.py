@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import signal
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -304,25 +306,49 @@ def test_second_interrupt_exits_at_once(
 
     file = input_file(tmp_path)
     exits: list[int] = []
+    saw_waiting = threading.Event()  # the stage saw the interrupt with a request in flight
+    done = threading.Event()  # the second press reached os._exit
 
     def fake_exit(code: int) -> None:
         exits.append(code)
+        done.set()
         raise SystemExit(code)
 
     monkeypatch.setattr(os, "_exit", fake_exit)
 
     def fake_transcribe_file(path, **kwargs):
-        api_mod._shutdown.begin()  # a request is in flight
-        os.kill(os.getpid(), signal.SIGTERM)  # first: the "waiting" path
-        api_mod._shutdown.end()
-        os.kill(os.getpid(), signal.SIGTERM)  # second: exit at once
-        raise AssertionError("should not reach this line")
+        # Stand in for the STT stage with one request in flight. The two
+        # interrupts are sent from a helper thread, one after the other, while
+        # the "stage" (this thread) blocks between them — as the real main
+        # thread does waiting on the pool. That makes press 1 and press 2
+        # separate handler runs (no same-thread coalescing), and the stage
+        # sees the first one with a request in flight (the "waiting" path).
+        api_mod._shutdown.begin()
+
+        def press() -> None:
+            os.kill(os.getpid(), signal.SIGTERM)  # first: the "waiting" path
+            time.sleep(1.0)  # let the first handler run before the second press
+            os.kill(os.getpid(), signal.SIGTERM)  # second: exit at once
+
+        threading.Thread(target=press, daemon=True).start()
+        # Block as the main thread does (waiting on the pool); poll the
+        # shutdown state so the first press is observed while a request is in
+        # flight. The second press's SystemExit(143) unwinds the run from here.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if done.is_set():
+                return
+            if api_mod.interrupted() and api_mod._shutdown.requesting:
+                saw_waiting.set()
+            time.sleep(0.01)
+        raise AssertionError("timed out waiting for the second interrupt to exit")
 
     monkeypatch.setattr(pipeline_mod, "transcribe_file", fake_transcribe_file)
 
     rc = main(["transcribe", str(file)])
     err = capsys.readouterr().err
 
+    assert saw_waiting.is_set()  # the "waiting" path ran, not the default exit
     assert exits == [143]
     assert rc == 143
     assert "Interrupted (signal)." in err
