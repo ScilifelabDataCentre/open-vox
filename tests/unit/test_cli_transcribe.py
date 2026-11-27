@@ -18,6 +18,15 @@ from ovox.media import InputValidationError
 from ovox.pipeline import PipelineError, WorkdirError
 
 
+@pytest.fixture(autouse=True)
+def stt_env_autouse(stt_env: dict[str, str]) -> None:
+    """The transcribe command resolves its config (``SttConfig.from_env``)
+    before it calls the pipeline, so the required STT settings must exist even
+    though the pipeline is mocked here and no request is made. Reuse the shared
+    ``stt_env`` fixture (tests/conftest.py) for every test so these do not
+    depend on a local ``.env`` (git-ignored, absent in CI)."""
+
+
 def result_dict(tmp_path: Path) -> dict:
     return {
         "text_file": tmp_path / "meeting.txt",

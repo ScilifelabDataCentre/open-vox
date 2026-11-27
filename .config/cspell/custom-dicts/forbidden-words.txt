@@ -30,8 +30,6 @@
 !Archeology
 !artifacts
 !Artifacts
-!behavior
-!Behavior
 !capitalization
 !Capitalization
 !capitalized
