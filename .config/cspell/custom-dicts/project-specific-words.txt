@@ -5,6 +5,7 @@
 # 
 # One word per line, in alphabetical order.
 # ---
+autojunk
 behavior
 Berserkers
 Berzelius
