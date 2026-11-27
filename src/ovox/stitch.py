@@ -10,8 +10,10 @@ joined in order, and after a hard cut the words the overlap repeats are
 removed by matching the end of the previous text against the start of the next.
 Most cuts land on silence and need no merge at all. When an endpoint does
 return ``segments`` (some hosts do, even without being asked), they are kept
-in the chunks JSON and a global segments JSON can be built with each chunk's
-start time added to the segment times — a global timeline for subtitles.
+in the chunks' JSON untouched, but the global-timeline / segments-JSON output
+is deferred until timestamps exist (the text merge removes overlap words that
+a timeline built from raw segment times would still contain, and there is no
+endpoint to test it against today).
 """
 
 from __future__ import annotations
@@ -34,11 +36,6 @@ from ovox.plan import ChunkEntry, ChunkPlan
 # single repeated word at the boundary is still overlap.
 MAX_OVERLAP_WORDS = 12
 MIN_MATCH_WORDS = 1
-# An endpoint may return segment times beyond the chunk's real length (the
-# overlap region of a hard-cut chunk ends *before* the cut, but a model can
-# still put a word at 10.1 s in a 10 s chunk). Clamp segment times to the
-# measured length before offsetting.
-TIME_EPSILON_S = 0.5
 
 
 def _normalize_word(word: str) -> str:
@@ -94,14 +91,20 @@ def merge_texts(
     previous one, so the model transcribes the same words twice. This looks
     for the longest run of words (at least *min_match_words*, at most
     *max_overlap_words*) whose lower-case punctuation-free form ends
-    *previous* and starts *current*, and drops that run from *current*.
-    Words are compared by their normalized form, so punctuation and case
-    differences do not defeat the match; the original spelling from
-    *current* is what is dropped.
+    *previous* and starts *current*, and drops that run **from *current*** —
+    the previous text is never changed. The next chunk is the side that heard
+    the cut word whole, so its copy is what stays in the transcript; the
+    previous chunk's copy of it was heard only in its (possibly clipped or
+    garbled) tail. Words are compared by their normalized form, so
+    punctuation and case differences do not defeat the match; the original
+    spelling from *current* is what is dropped.
 
     With no matching run the texts are joined as-is (a silence cut, or a
     model that transcribed the overlap differently — a repeated word or two
-    then remains, which is acceptable for the beta).
+    then remains, which is acceptable for the beta). In particular, when the
+    previous chunk's last word is garbled by the cut and no run matches, the
+    garbled word is kept: nothing is dropped, and both copies of the overlap
+    may remain in the transcript.
     """
     prev_words = _words(previous)
     cur_words = _words(current)
@@ -170,79 +173,6 @@ def build_text(plan: ChunkPlan, replies: Sequence[dict[str, Any]]) -> str:
             text = _dedupe_overlap(parts[-1], text)
         parts.append(text)
     return " ".join(p for p in parts if p).strip()
-
-
-def global_segments(
-    plan: ChunkPlan,
-    replies: Sequence[dict[str, Any]],
-    *,
-    time_offset: Sequence[float | None] | None = None,
-) -> list[dict[str, Any]] | None:
-    """Build a global segment list from the replies, or None when no endpoint
-    data is available.
-
-    Some endpoints return ``segments`` (or ``words``) in the reply even though
-    ovox does not ask for them; those carry chunk-local times. Each chunk's
-    start time (its *time_offset*: measured cut position when known, planned
-    position otherwise) is added to its segment times to place them on the
-    whole file's timeline, which is what subtitle output needs. Segment times
-    are clamped to the chunk's measured length so a word placed slightly past
-    the cut does not jump into the next chunk.
-
-    The text-only beta (Voxtral on vLLM) returns plain text: in that case this
-    returns None and callers write no segments JSON.
-
-    Args:
-        plan: The chunk plan.
-        replies: One reply dict per chunk, in plan order.
-        time_offset: Optional per-chunk start offset; defaults to the planned
-            chunk start.
-
-    Returns:
-        A list of ``{"start": s, "end": s, "text": "..."}`` dicts with times
-        in seconds from the start of the whole file, or None when no reply
-        carries segments.
-    """
-    if len(replies) != len(plan.chunks):
-        raise ValueError(f"expected {len(plan.chunks)} replies, got {len(replies)}")
-    has_segments = any(isinstance(r.get("segments"), list) and r["segments"] for r in replies)
-    if not has_segments:
-        return None
-
-    segments: list[dict[str, Any]] = []
-    for entry, reply in zip(plan.chunks, replies, strict=True):
-        offset = (
-            time_offset[entry.index]
-            if time_offset is not None and entry.index < len(time_offset)
-            else entry.start
-        )
-        if offset is None:
-            offset = entry.start
-        limit = entry.actual_duration if entry.actual_duration is not None else entry.duration
-        for seg in reply.get("segments", []):
-            if not isinstance(seg, dict):
-                continue
-            text = seg.get("text")
-            start = seg.get("start")
-            end = seg.get("end")
-            if not isinstance(text, str):
-                continue
-            try:
-                start_s = float(start) if start is not None else 0.0
-                end_s = float(end) if end is not None else start_s
-            except TypeError, ValueError:
-                continue
-            start_s = max(0.0, min(start_s, limit + TIME_EPSILON_S))
-            end_s = max(start_s, min(end_s, limit + TIME_EPSILON_S))
-            segments.append(
-                {
-                    "start": round(offset + start_s, 3),
-                    "end": round(offset + end_s, 3),
-                    "text": text.strip(),
-                }
-            )
-    segments.sort(key=lambda s: s["start"])
-    return segments
 
 
 # --- Per-chunk transcript files -------------------------------------------------

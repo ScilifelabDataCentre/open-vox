@@ -5,8 +5,8 @@ chunks, cut them into the work folder, send the missing ones to the STT
 endpoint (bounded concurrency, retries), and stitch the replies into the
 transcript files. The CLI (and, later, a server job layer) are thin wrappers
 around this function: progress is reported through a callback and failures
-come back as exceptions, so nothing here prints or exits except one resume
-note on stderr.
+come back as exceptions, so nothing here prints or exits except a resume
+note and an interruption note on stderr.
 
 Work folder
 -----------
@@ -38,7 +38,7 @@ from typing import Any
 
 from ovox import plan as plan_mod
 from ovox import stitch
-from ovox.api import STTClient, SttError, transcribe_chunk
+from ovox.api import STTClient, SttError, interrupted, transcribe_chunk
 from ovox.config import AudioConfig, ChunkConfig, SttConfig, TranscribeConfig
 from ovox.media import MediaError, MediaInfo, validate_input
 from ovox.plan import ChunkEntry, ChunkPlan
@@ -104,7 +104,7 @@ def plan_and_cut(
     audio_config: AudioConfig,
     stt: SttConfig,
     workdir_path: Path,
-) -> ChunkPlan:
+) -> tuple[ChunkPlan, bool]:
     """Plan the chunks and cut them into *workdir_path*, or reuse the stored
     plan when it is still valid.
 
@@ -115,6 +115,10 @@ def plan_and_cut(
     ovox's own files (so stale transcripts for a different plan cannot be
     reused). Used by both the real run and the ``--dry-run`` local stage, so
     the two always agree on what a work folder contains.
+
+    Returns:
+        The plan, and whether a stored plan was reused (so the caller can
+        tell a fresh start from a re-run that picks the folder up).
     """
     candidate: ChunkPlan | None = None
     if chunk_plan_path(workdir_path).exists():
@@ -132,8 +136,8 @@ def plan_and_cut(
         workdir_path.mkdir(parents=True, exist_ok=True)
         plan_mod.write_chunks(plan, workdir_path, audio_config)
         chunk_plan_path(workdir_path).write_text(plan_mod.plan_manifest_text(plan))
-        return plan
-    return candidate
+        return plan, False
+    return candidate, True
 
 
 def load_plan(workdir: Path) -> ChunkPlan:
@@ -249,8 +253,17 @@ def transcribe_file(
     ``--dry-run`` local stage (a dry run stops before the STT stage).
 
     The transcript is written as ``<stem>.txt`` next to the input, or to
-    *output* when given; a ``<stem>.segments.json`` is written alongside it
-    only when the endpoint returned segment data.
+    *output* when given. The beta is text-only, so no segments JSON is
+    written: if the endpoint did return segment data, it is kept untouched in
+    the work folder's per-chunk result files until timestamp output exists.
+
+    The target transcript is not overwritten silently: a run that starts
+    fresh (no matching work folder) fails if the transcript already exists
+    (before any STT request is sent) and the message offers deleting it or
+    choosing another path with ``-o``. A run that reuses a matching work
+    folder (``resume``, or a plain re-run that picks the folder up)
+    regenerates the transcript that work folder produced, so it overwrites
+    it.
 
     Args:
         input_path: The media file to transcribe.
@@ -263,8 +276,7 @@ def transcribe_file(
         on_progress: Called with ``(done, total)`` after each chunk completes.
 
     Returns:
-        A result dict: ``text_file``, ``segments_file`` (None when the
-        endpoint returned no segments), ``chunks_transcribed`` (STT calls made
+        A result dict: ``text_file``, ``chunks_transcribed`` (STT calls made
         by this run), ``chunks_total``, ``resumed`` (the work folder was
         reused), ``workdir`` and ``timings`` (per-stage seconds: probe, plan,
         cut, stt, merge).
@@ -278,11 +290,13 @@ def transcribe_file(
     """
     source = Path(input_path)
     workdir_path = Path(workdir) if workdir is not None else default_workdir(source)
+    base = Path(output) if output is not None else source
+    text_path = base.with_name(f"{base.stem}.txt")
     stages: dict[str, float] = {}
 
     to_do: list[tuple[int, ChunkEntry, Path]] = []
     text = ""
-    segments: list[dict[str, Any]] | None = None
+    reused = False
     close_at_end: STTClient | None = None
     if client is None:
         client = STTClient(config=stt)
@@ -297,6 +311,7 @@ def transcribe_file(
         t0 = time.monotonic()
         plan: ChunkPlan
         if resume:
+            reused = True
             plan = load_plan(workdir_path)
             check_resume_matches(plan, chunk_config, audio_config, stt)
             missing_audio = [e for e in plan.chunks if not (workdir_path / e.name).exists()]
@@ -308,8 +323,21 @@ def transcribe_file(
                     f"{names}{more}. Delete the work folder and transcribe again."
                 )
         else:
-            plan = plan_and_cut(info, chunk_config, audio_config, stt, workdir_path)
+            plan, reused = plan_and_cut(info, chunk_config, audio_config, stt, workdir_path)
         stages["cut"] = time.monotonic() - t0
+
+        # -- output check ----------------------------------------------------
+        # A run that starts fresh (no matching work folder) never overwrites
+        # an existing transcript: that file may be the output of an earlier,
+        # different run that the user still wants, or something else entirely.
+        # A run that reuses a matching work folder (a resume, or a plain
+        # re-run that picks the folder up) regenerates the transcript that
+        # work folder produced, so it may overwrite it.
+        if not reused and text_path.exists():
+            raise WorkdirError(
+                f"Transcript file {text_path} already exists. Delete it, or choose "
+                f"another path with -o."
+            )
 
         # -- transcribe the chunks without a transcript file -----------------
         t0 = time.monotonic()
@@ -346,7 +374,6 @@ def transcribe_file(
             )
         solid = stitch.replies_from_payloads([p for p in payloads if p is not None])
         text = stitch.build_text(plan, solid)
-        segments = stitch.global_segments(plan, solid)
         stages["merge"] = time.monotonic() - t0
     except SttError as exc:
         raise PipelineError(f"STT endpoint error: {exc}") from exc
@@ -361,21 +388,16 @@ def transcribe_file(
             close_at_end.close_http()
 
     # -- outputs -----------------------------------------------------------
-    base = Path(output) if output is not None else source
-    text_path = base.with_name(f"{base.stem}.txt")
     text_path.parent.mkdir(parents=True, exist_ok=True)
     text_path.write_text(text + "\n", encoding="utf-8")
-    segments_path: Path | None = None
-    if segments is not None:
-        segments_path = base.with_name(f"{base.stem}.segments.json")
-        segments_path.write_text(json.dumps(segments, indent=2) + "\n", encoding="utf-8")
 
     return {
         "text_file": text_path,
-        "segments_file": segments_path,
         "chunks_transcribed": len(to_do),
         "chunks_total": len(plan.chunks),
-        "resumed": resume,
+        # The work folder was reused (a --resume, or a plain re-run that
+        # picked the folder up), so the cut stage skipped.
+        "resumed": reused,
         "workdir": str(workdir_path),
         "timings": {name: round(seconds, 3) for name, seconds in stages.items()},
     }
@@ -410,8 +432,9 @@ def prepare_for_dry_run(
     if resume:
         plan = load_plan(workdir_path)
         check_resume_matches(plan, chunk_config, audio_config, stt)
+        reused = True
     else:
-        plan = plan_and_cut(info, chunk_config, audio_config, stt, workdir_path)
+        plan, reused = plan_and_cut(info, chunk_config, audio_config, stt, workdir_path)
     cut = time.monotonic() - t0
 
     replies = stitch.load_replies(workdir_path, plan)
@@ -421,7 +444,7 @@ def prepare_for_dry_run(
         "workdir": str(workdir_path),
         "chunks_transcribed": len(plan.chunks) - len(pending),
         "chunks_pending": len(pending),
-        "resumed": resume,
+        "resumed": reused,
         "timings": {"probe": round(probe, 3), "cut": round(cut, 3)},
     }
 
@@ -441,15 +464,22 @@ def _run_transcription(
 ) -> None:
     """Send *to_do* chunks to the endpoint with bounded concurrency.
 
-    The first chunk that fails for good raises, setting a stop event that
-    cancels the chunks not yet started and interrupts the ones in flight at
-    their next check. Chunks that finished stay on disk (each result is
+    The first chunk that fails for good sets a stop event, so no chunk not yet
+    started is sent and no retry goes out; a request already in flight is let
+    run to completion (it is cut short only by the shutdown bound in
+    :mod:`ovox.api`). Chunks that finished stay on disk (each result is
     written ``.tmp`` then atomically renamed), so a later run resumes from
     them.
 
+    An interrupt signal (Ctrl-C, SIGTERM) stops the run the same way — it is
+    folded into the same "stop requested" check (see :mod:`ovox.api`). Because
+    every result is written atomically, any chunk whose result file exists is
+    complete and will not be re-transcribed by a resume.
+
     Raises:
-        PipelineError: a chunk could not be transcribed; the message names the
-            chunk and says the work folder, so a resume is one command away.
+        PipelineError: a chunk could not be transcribed (or the run was
+            interrupted); the message names the chunk and says the work
+            folder, so a resume is one command away.
     """
     stop = threading.Event()
     failed: list[SttError] = []
@@ -457,14 +487,19 @@ def _run_transcription(
     state = {"done": base_done}
     lock = threading.Lock()
 
+    # True when the run must stop: another chunk failed for good (the stop
+    # event), or an interrupt signal arrived (see ovox.api.interrupted).
+    def _stop_requested() -> bool:
+        return stop.is_set() or interrupted()
+
     def _work(item: tuple[int, ChunkEntry, Path]) -> None:
         _index, entry, path = item
-        if stop.is_set():
+        if _stop_requested():
             return
         try:
             reply = transcribe_chunk(client, path, entry.name, config, stop_event=stop)
         except SttError as exc:
-            if not stop.is_set():
+            if not _stop_requested():
                 stop.set()
                 failed.append(exc)
             return
@@ -493,3 +528,17 @@ def _run_transcription(
             f"({done_now}/{total} chunks are done in {workdir}; "
             f"run the same command again to resume)."
         ) from first
+
+    if _stop_requested():
+        # An interrupt stopped the run (nothing else failed): the main
+        # thread, waiting on the pool, is the one that unwinds, so this is
+        # where the interruption is reported.
+        print(
+            f"Interrupted: {state['done']}/{total} chunks are done in {workdir}; "
+            "run the same command again to resume.",
+            file=sys.stderr,
+        )
+        raise PipelineError(
+            f"Transcription was interrupted ({state['done']}/{total} chunks done "
+            f"in {workdir}); run the same command again to resume."
+        )

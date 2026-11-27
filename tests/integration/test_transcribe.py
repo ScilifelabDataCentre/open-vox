@@ -9,8 +9,13 @@ JSON, one always-failing chunk) while recording every request it receives.
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
+import subprocess
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -151,7 +156,13 @@ def default_configs() -> tuple[ChunkConfig, AudioConfig, TranscribeConfig]:
     return (
         ChunkConfig(max_chunk_size_bytes=26214400, max_chunk_duration_s=2.0, safety=1.0),
         AudioConfig(sample_rate=16000, channels=1, bitrate_bps=64_000),
-        TranscribeConfig(max_concurrency=2, max_retries=2, backoff_base_s=0.01, backoff_cap_s=0.05),
+        TranscribeConfig(
+            max_concurrency=2,
+            max_retries=2,
+            backoff_base_s=0.01,
+            backoff_cap_s=0.05,
+            max_timeout_retries=1,
+        ),
     )
 
 
@@ -162,10 +173,16 @@ def run(
     *,
     name: str = "tone_only.wav",
     behavior: object = None,
+    workdir: Path | None = None,
     **kwargs: object,
 ) -> dict:
     if behavior is not None:
         server.behavior = behavior  # type: ignore[method-assign]
+    # The tests share the session media dir, so a transcript a previous test
+    # wrote next to the source would make this (fresh) run refuse to
+    # overwrite it; remove it unless the test chose its own -o.
+    if "output" not in kwargs:
+        (media_dir / f"{Path(name).stem}.txt").unlink(missing_ok=True)
     chunk_config, audio_config, transcribe_config = default_configs()
     return transcribe_file(
         media_dir / name,
@@ -173,7 +190,7 @@ def run(
         audio_config=audio_config,
         stt=stt_config(server),
         transcribe_config=transcribe_config,
-        workdir=tmp_path / "wd",
+        workdir=workdir if workdir is not None else tmp_path / "wd",
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -202,7 +219,6 @@ def test_transcribe_end_to_end_with_hard_cut_overlap(
 
     assert result["chunks_total"] == 2
     assert result["chunks_transcribed"] == 2
-    assert result["segments_file"] is None
     # The overlap word ("beta") appears exactly once in the merged text.
     assert result["text_file"].read_text() == "alpha beta gamma\n"
     # The requests were plain: model + file, bearer auth, an MP3 named after
@@ -394,3 +410,146 @@ def test_resume_without_workfolder_fails(
             workdir=tmp_path / "nope",
             resume=True,
         )
+
+
+# --- Interrupting a run in flight (real subprocess, real signals) ----------------
+
+
+def _cli_env(server: _FakeSttServer) -> dict[str, str]:
+    """The environment for a real ``ovox transcribe`` subprocess: it points the
+    CLI at the in-process fake server and pins the chunk/audio settings so the
+    plan is deterministic (tone_only.wav, 3 s, becomes two chunks)."""
+    return {
+        "STT_ENDPOINT": server.endpoint,
+        "STT_API_KEY": "test-key",
+        "STT_MODEL": "voxtral-1",
+        # Both chunks in flight at once, no retries (an interrupt should not
+        # be masked by a retry).
+        "STT_MAX_CONCURRENCY": "4",
+        "STT_MAX_RETRIES": "0",
+        "STT_MAX_TIMEOUT_RETRIES": "0",
+        "STT_BACKOFF_BASE_S": "0.01",
+        "STT_BACKOFF_CAP_S": "0.05",
+        # The same settings the in-process tests use: a 2 s cap gives two
+        # chunks for tone_only.wav.
+        "AUDIO_SAMPLE_RATE": "16000",
+        "AUDIO_CHANNELS": "1",
+        "AUDIO_BITRATE_KBPS": "64",
+        "CHUNK_MAX_SIZE_BYTES": "26214400",
+        "CHUNK_MAX_DURATION_S": "2",
+        "CHUNK_SAFETY": "1",
+    }
+
+
+def _wait_until(condition, timeout_s: float = 15.0) -> None:
+    """Poll *condition* until it is true or the deadline passes (raises)."""
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting for the subprocess condition")
+        time.sleep(0.02)
+
+
+def _transcribe_subprocess(
+    media_dir: Path, workdir: Path, server: _FakeSttServer
+) -> subprocess.Popen:
+    env = {**os.environ, **_cli_env(server)}
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "ovox",
+            "transcribe",
+            str(media_dir / "tone_only.wav"),
+            "--workdir",
+            str(workdir),
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def test_interrupt_during_slow_requests_exits_quickly(
+    media_dir: Path, tmp_path: Path, server: _FakeSttServer
+) -> None:
+    """Ctrl-C during slow (in-flight) requests must not hang: the first press
+    reports how many requests are still running, and a second press exits at
+    once — long before the server finishes (it sleeps 30 s per chunk)."""
+
+    def slow(attempt: int, record: dict[str, object]) -> tuple[int, object, dict[str, str]]:
+        time.sleep(30.0)  # the request is "in flight" for a long time
+        return 200, {"text": f"text of {record['file_name']}"}, {}
+
+    server.behavior = slow  # type: ignore[method-assign]
+    workdir = tmp_path / "wd"
+    proc = _transcribe_subprocess(media_dir, workdir, server)
+
+    # Both chunks are in flight (the fake server sleeps before answering).
+    _wait_until(lambda: len(server.requests) >= 2)
+    started = time.monotonic()
+    proc.send_signal(signal.SIGINT)
+    time.sleep(1.0)
+    proc.send_signal(signal.SIGINT)  # second press: quit at once
+    try:
+        _out, _err = proc.communicate(timeout=10.0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    elapsed = time.monotonic() - started
+
+    # Exited at once on the second press (128 + SIGINT), not after the 30 s
+    # server sleep.
+    assert proc.returncode == 128 + signal.SIGINT, (proc.returncode, _err)
+    assert elapsed < 10.0, f"took {elapsed:.1f}s to exit after the interrupt"
+    # The first press told the user what was happening.
+    assert "Waiting for" in _err
+    assert "in-flight request(s)" in _err
+    assert "press Ctrl-C again" in _err
+
+
+def test_interrupt_keeps_the_finished_chunks(
+    media_dir: Path, tmp_path: Path, server: _FakeSttServer
+) -> None:
+    """A request that finishes before the interrupt keeps its result, so a
+    later resume does not pay for it again: chunk 0 answers at once, chunk 1
+    hangs; after the interrupt chunk 0's transcript is on disk and a resume
+    sends only chunk 1."""
+
+    def one_fast_one_slow(
+        attempt: int, record: dict[str, object]
+    ) -> tuple[int, object, dict[str, str]]:
+        if "_chunk_01_" in str(record["file_name"]):
+            time.sleep(30.0)
+        return 200, {"text": f"text of {record['file_name']}"}, {}
+
+    server.behavior = one_fast_one_slow  # type: ignore[method-assign]
+    workdir = tmp_path / "wd"
+    proc = _transcribe_subprocess(media_dir, workdir, server)
+
+    # Chunk 0 has finished (its transcript is written) and chunk 1 is in flight.
+    _wait_until(lambda: (workdir / "chunk_00.json").exists() and len(server.requests) >= 2)
+    proc.send_signal(signal.SIGINT)
+    try:
+        _out, _err = proc.communicate(timeout=15.0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # The finished chunk's result survived the interrupt (written atomically).
+    assert (workdir / "chunk_00.json").exists()
+    assert not (workdir / "chunk_01.json").exists()
+    # No transcript: the run was interrupted before all chunks were done.
+    assert not (media_dir / "tone_only.txt").exists()
+
+    # A resume now sends only the missing chunk.
+    server.behavior = _default_behavior  # type: ignore[method-assign]
+    server.requests.clear()
+    result = run(media_dir, tmp_path, server, resume=True, workdir=workdir)
+
+    assert result["resumed"] is True
+    assert result["chunks_transcribed"] == 1
+    manifest = json.loads((workdir / "ovox-chunk-manifest.json").read_text())
+    assert server.file_names() == [manifest["chunks"][1]["name"]]
+    assert result["text_file"].exists()

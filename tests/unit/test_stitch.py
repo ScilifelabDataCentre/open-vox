@@ -15,7 +15,6 @@ from ovox.plan import ChunkEntry, ChunkPlan, Setting
 from ovox.stitch import (
     build_text,
     chunk_transcript_name,
-    global_segments,
     load_chunk_transcript,
     load_replies,
     merge_texts,
@@ -127,6 +126,28 @@ def test_merge_texts_respects_max_overlap_words() -> None:
     assert merge_texts(prev, cur, max_overlap_words=20) == (prev + " tail")
 
 
+def test_merge_texts_drops_the_previous_side_of_the_overlap() -> None:
+    """The repeated run is dropped from the *next* chunk's text, never from
+    the previous one: the next chunk heard the cut word whole, so its copy is
+    what stays. Here the next chunk re-speaks the overlap with different
+    spelling — that spelling is what survives."""
+    prev = "one two three"
+    cur = "ONE TWO THREE four"  # the overlap, re-transcribed
+    assert merge_texts(prev, cur) == "one two three four"
+    # The previous text is untouched; only the start of the current text is
+    # dropped.
+    assert merge_texts(prev, "three four") == "one two three four"
+
+
+def test_merge_texts_keeps_a_garbled_last_word_before_the_cut() -> None:
+    """When the hard cut garbles the previous chunk's last word, no run
+    matches and nothing is dropped: the garbled word is kept (an imperfect
+    transcript is acceptable; dropping it would risk eating real words)."""
+    prev = "the lazy dog was cut here asd"  # "asd": the model's garbled tail
+    cur = "the lazy dog was cut here and ran"
+    assert merge_texts(prev, cur) == prev + " " + cur
+
+
 # --- build_text ----------------------------------------------------------------
 
 
@@ -150,62 +171,6 @@ def test_build_text_rejects_reply_without_text() -> None:
     plan = make_plan()
     with pytest.raises(FatalSttError, match="no 'text' field"):
         build_text(plan, [{"text": "a"}, {"other": 1}, {"text": "c"}])
-
-
-# --- global_segments -------------------------------------------------------------
-
-
-def test_global_segments_none_without_segment_data() -> None:
-    plan = make_plan()
-    replies = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
-    assert global_segments(plan, replies) is None
-
-
-def test_global_segments_offsets_by_chunk_start() -> None:
-    plan = make_plan()
-    replies = [
-        {"text": "a", "segments": [{"start": 0.0, "end": 1.0, "text": "a"}]},
-        {"text": "b", "segments": [{"start": 2.0, "end": 3.0, "text": "b"}]},
-        {"text": "c", "segments": [{"start": 5.0, "end": 6.0, "text": "c"}]},
-    ]
-    segments = global_segments(plan, replies)
-    assert segments is not None
-    assert [(s["start"], s["end"]) for s in segments] == [
-        (0.0, 1.0),  # chunk 0 starts at 0
-        (302.0, 303.0),  # chunk 1 starts at 300
-        (605.0, 606.0),  # chunk 2 starts at 600
-    ]
-
-
-def test_global_segments_clamps_to_chunk_length() -> None:
-    # A word placed 30 s past a 10 s chunk must not land in the next chunk.
-    plan = make_plan(
-        [(0.0, 10.0, 0.0), (10.0, 20.0, 0.0), (20.0, 30.0, 0.0)],
-        overlap_flags=[False, False, False],
-    )
-    replies = [
-        {"text": "a", "segments": [{"start": 9.5, "end": 40.0, "text": "a"}]},
-        {"text": "b", "segments": [{"start": 0.0, "end": 1.0, "text": "b"}]},
-        {"text": "c", "segments": [{"start": 0.0, "end": 1.0, "text": "c"}]},
-    ]
-    segments = global_segments(plan, replies)
-    assert segments is not None
-    assert segments[0] == {"start": 9.5, "end": 10.0 + 0.5, "text": "a"}
-
-
-def test_global_segments_uses_actual_duration_when_measured() -> None:
-    plan = make_plan()
-    plan.chunks[0].actual_duration = 299.0
-    replies = [
-        {"text": "a", "segments": [{"start": 299.2, "end": 299.8, "text": "a"}]},
-        {"text": "b"},
-        {"text": "c"},
-    ]
-    segments = global_segments(plan, replies)
-    assert segments is not None
-    assert segments[0]["start"] == 299.2  # within measured length + epsilon
-    # The end 0.8 s past the measured 299 s is clamped to length + epsilon.
-    assert segments[0]["end"] == 299.5
 
 
 # --- per-chunk transcript files -----------------------------------------------------

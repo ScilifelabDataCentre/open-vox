@@ -223,6 +223,11 @@ DEFAULT_MAX_CONCURRENCY = 4
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_BACKOFF_BASE_S = 1.0
 DEFAULT_BACKOFF_CAP_S = 60.0
+# Timeouts get their own, smaller retry budget: when the read timeout fires the
+# server may still be working on the chunk, so a retry re-sends the same audio
+# while the first attempt is still running (the endpoint sees the chunk twice).
+# 429/5xx retries have no such ambiguity, so they keep the full ``max_retries``.
+DEFAULT_MAX_TIMEOUT_RETRIES = 1
 
 
 @dataclass(frozen=True)
@@ -230,7 +235,10 @@ class TranscribeConfig:
     """How ovox talks to the STT endpoint during transcription.
 
     The retry settings bound how ovox retries a failing chunk request (see
-    ``ovox.api``): at most ``max_retries`` retries after the first attempt, with
+    ``ovox.api``): at most ``max_retries`` retries after the first attempt for
+    network errors and retryable HTTP statuses (408/409/425/429/5xx), and at
+    most ``max_timeout_retries`` for read timeouts — a timeout means the server
+    may still be processing the chunk, so ovox retries those less. Both use
     capped exponential backoff (full jitter) between attempts. The concurrency
     setting bounds how many chunks are sent in parallel.
     """
@@ -239,6 +247,7 @@ class TranscribeConfig:
     max_retries: int
     backoff_base_s: float
     backoff_cap_s: float
+    max_timeout_retries: int
 
     @classmethod
     def from_env(cls) -> TranscribeConfig:
@@ -251,6 +260,7 @@ class TranscribeConfig:
         max_retries = _get_env_int("STT_MAX_RETRIES", DEFAULT_MAX_RETRIES)
         backoff_base_s = _get_env_float("STT_BACKOFF_BASE_S", DEFAULT_BACKOFF_BASE_S)
         backoff_cap_s = _get_env_float("STT_BACKOFF_CAP_S", DEFAULT_BACKOFF_CAP_S)
+        max_timeout_retries = _get_env_int("STT_MAX_TIMEOUT_RETRIES", DEFAULT_MAX_TIMEOUT_RETRIES)
 
         if max_concurrency <= 0:
             raise ValueError(f"STT_MAX_CONCURRENCY must be positive, got: {max_concurrency}")
@@ -263,11 +273,14 @@ class TranscribeConfig:
                 f"STT_BACKOFF_CAP_S must be >= STT_BACKOFF_BASE_S, "
                 f"got: {backoff_cap_s} < {backoff_base_s}"
             )
+        if max_timeout_retries < 0:
+            raise ValueError(f"STT_MAX_TIMEOUT_RETRIES must be >= 0, got: {max_timeout_retries}")
         return cls(
             max_concurrency=max_concurrency,
             max_retries=max_retries,
             backoff_base_s=backoff_base_s,
             backoff_cap_s=backoff_cap_s,
+            max_timeout_retries=max_timeout_retries,
         )
 
 

@@ -116,6 +116,7 @@ _DEPLOYMENT_VARS = (
     "STT_MAX_RETRIES",
     "STT_BACKOFF_BASE_S",
     "STT_BACKOFF_CAP_S",
+    "STT_MAX_TIMEOUT_RETRIES",
 )
 
 
@@ -258,6 +259,8 @@ def test_transcribe_config_defaults(clean_deployment_env) -> None:
     assert transcribe.max_retries == 5
     assert transcribe.backoff_base_s == 1.0
     assert transcribe.backoff_cap_s == 60.0
+    # Timeouts get their own, smaller retry budget (see the module docs).
+    assert transcribe.max_timeout_retries == 1
 
 
 def test_transcribe_config_reads_env(clean_deployment_env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -265,6 +268,7 @@ def test_transcribe_config_reads_env(clean_deployment_env, monkeypatch: pytest.M
     monkeypatch.setenv("STT_MAX_RETRIES", "0")
     monkeypatch.setenv("STT_BACKOFF_BASE_S", "0.5")
     monkeypatch.setenv("STT_BACKOFF_CAP_S", "30")
+    monkeypatch.setenv("STT_MAX_TIMEOUT_RETRIES", "3")
 
     transcribe = TranscribeConfig.from_env()
 
@@ -272,6 +276,7 @@ def test_transcribe_config_reads_env(clean_deployment_env, monkeypatch: pytest.M
     assert transcribe.max_retries == 0
     assert transcribe.backoff_base_s == 0.5
     assert transcribe.backoff_cap_s == 30.0
+    assert transcribe.max_timeout_retries == 3
 
 
 @pytest.mark.parametrize(
@@ -280,6 +285,7 @@ def test_transcribe_config_reads_env(clean_deployment_env, monkeypatch: pytest.M
         pytest.param("STT_MAX_CONCURRENCY", "0", id="zero-concurrency"),
         pytest.param("STT_MAX_CONCURRENCY", "-1", id="negative-concurrency"),
         pytest.param("STT_MAX_RETRIES", "-1", id="negative-retries"),
+        pytest.param("STT_MAX_TIMEOUT_RETRIES", "-1", id="negative-timeout-retries"),
         pytest.param("STT_BACKOFF_BASE_S", "0", id="zero-base"),
     ],
 )

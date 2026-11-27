@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import signal
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch
 
@@ -218,7 +219,7 @@ def _post_response(
     url: str = ENDPOINT,
     headers: dict[str, str] | None = None,
 ) -> httpx.Response:
-    """Build a real httpx.Response, as Client.post would return it."""
+    """Build a real httpx.Response, as Client.send would return it."""
     merged = {"Content-Type": "application/json"}
     if headers:
         merged.update(headers)
@@ -231,22 +232,26 @@ def test_transcribe_file_sends_plain_multipart_request(client: STTClient, tmp_pa
     """The request carries only model and file: no verbose_json or timestamps."""
     chunk = tmp_path / "meeting_chunk_01_5.2-98.3.mp3"
     chunk.write_bytes(b"fake mp3")
-    with patch(
-        "httpx.Client.post",
-        return_value=_post_response(200, '{"text": "hello world"}'),
-    ) as mock_post:
+
+    def send(request: httpx.Request, *args: object, **kwargs: object) -> httpx.Response:
+        request.read()  # the real send serializes the body from the (open) file
+        return _post_response(200, '{"text": "hello world"}')
+
+    with patch("httpx.Client.send", side_effect=send) as mock_send:
         reply = client.transcribe_file(chunk, chunk_name=chunk.name)
 
     assert reply == {"text": "hello world"}
-    args, kwargs = mock_post.call_args
-    assert args[0] == ENDPOINT
-    assert kwargs["headers"]["Authorization"] == f"Bearer {API_KEY}"
-    assert kwargs["data"] == {"model": MODEL}
-    # A multipart file part named "file"; nothing else is asked for.
-    filename, _fileobj, content_type = kwargs["files"]["file"]
-    assert filename == chunk.name
-    assert content_type == "audio/mpeg"
-    assert set(kwargs["files"]) == {"file"}
+    request = mock_send.call_args.args[0]
+    assert request.url == ENDPOINT
+    assert request.headers["Authorization"] == f"Bearer {API_KEY}"
+    # The multipart body carries a "model" field and a "file" part named
+    # after the chunk; nothing else is asked for.
+    body = request.content
+    assert b'name="model"' in body and MODEL.encode() in body
+    assert b'name="file"' in body
+    assert chunk.name.encode() in body
+    assert b"audio/mpeg" in body
+    assert b"timestamp" not in body and b"verbose" not in body
 
 
 def test_transcribe_file_keeps_extra_reply_fields(client: STTClient, tmp_path) -> None:
@@ -254,7 +259,7 @@ def test_transcribe_file_keeps_extra_reply_fields(client: STTClient, tmp_path) -
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     body = '{"text": "hi", "segments": [{"start": 0.0, "end": 1.0, "text": "hi"}]}'
-    with patch("httpx.Client.post", return_value=_post_response(200, body)):
+    with patch("httpx.Client.send", return_value=_post_response(200, body)):
         reply = client.transcribe_file(chunk)
 
     assert reply["text"] == "hi"
@@ -265,7 +270,7 @@ def test_transcribe_file_401_is_fatal_and_points_at_check(client: STTClient, tmp
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     with (
-        patch("httpx.Client.post", return_value=_post_response(401, "nope")),
+        patch("httpx.Client.send", return_value=_post_response(401, "nope")),
         pytest.raises(FatalSttError, match="ovox check") as excinfo,
     ):
         client.transcribe_file(chunk, chunk_name="c.mp3")
@@ -276,7 +281,7 @@ def test_transcribe_file_404_is_fatal(client: STTClient, tmp_path) -> None:
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     with (
-        patch("httpx.Client.post", return_value=_post_response(404, "")),
+        patch("httpx.Client.send", return_value=_post_response(404, "")),
         pytest.raises(FatalSttError),
     ):
         client.transcribe_file(chunk)
@@ -288,7 +293,7 @@ def test_transcribe_file_bad_json_is_fatal(client: STTClient, tmp_path) -> None:
     html = _post_response(200, "<html>gateway</html>")
     html.headers["Content-Type"] = "text/html"
     with (
-        patch("httpx.Client.post", return_value=html),
+        patch("httpx.Client.send", return_value=html),
         pytest.raises(FatalSttError, match="non-JSON"),
     ):
         client.transcribe_file(chunk)
@@ -298,7 +303,7 @@ def test_transcribe_file_missing_text_is_fatal(client: STTClient, tmp_path) -> N
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     with (
-        patch("httpx.Client.post", return_value=_post_response(200, '{"error": "boom"}')),
+        patch("httpx.Client.send", return_value=_post_response(200, '{"error": "boom"}')),
         pytest.raises(FatalSttError, match="no 'text' field"),
     ):
         client.transcribe_file(chunk)
@@ -309,7 +314,7 @@ def test_transcribe_file_retryable_status_keeps_retry_after(client: STTClient, t
     chunk.write_bytes(b"fake")
     with (
         patch(
-            "httpx.Client.post",
+            "httpx.Client.send",
             return_value=_post_response(429, "", headers={"Retry-After": "7"}),
         ),
         pytest.raises(SttError) as excinfo,
@@ -323,10 +328,33 @@ def test_transcribe_file_timeout_is_transient(client: STTClient, tmp_path) -> No
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     with (
-        patch("httpx.Client.post", side_effect=httpx.ReadTimeout("slow")),
-        pytest.raises(SttError, match="timed out"),
+        patch("httpx.Client.send", side_effect=httpx.ReadTimeout("slow")),
+        pytest.raises(SttError, match="may still be working"),
     ):
         client.transcribe_file(chunk)
+
+
+def test_transcribe_file_timeout_is_marked(client: STTClient, tmp_path) -> None:
+    """A timeout is flagged as such, so the retry loop can budget it less."""
+    chunk = tmp_path / "c.mp3"
+    chunk.write_bytes(b"fake")
+    with (
+        patch("httpx.Client.send", side_effect=httpx.ReadTimeout("slow")),
+        pytest.raises(SttError) as excinfo,
+    ):
+        client.transcribe_file(chunk)
+    assert excinfo.value.timed_out is True
+
+
+def test_transcribe_file_network_error_is_not_marked_timeout(client: STTClient, tmp_path) -> None:
+    chunk = tmp_path / "c.mp3"
+    chunk.write_bytes(b"fake")
+    with (
+        patch("httpx.Client.send", side_effect=httpx.ConnectError("down")),
+        pytest.raises(SttError, match="Network error") as excinfo,
+    ):
+        client.transcribe_file(chunk)
+    assert excinfo.value.timed_out is False
 
 
 # --- backoff_delay -----------------------------------------------------------
@@ -359,6 +387,7 @@ def _transcribe_config(**overrides: object) -> TranscribeConfig:
         "max_retries": 3,
         "backoff_base_s": 1.0,
         "backoff_cap_s": 8.0,
+        "max_timeout_retries": 1,
     }
     values.update(overrides)
     return TranscribeConfig(**values)  # type: ignore[arg-type]
@@ -369,7 +398,7 @@ def test_transcribe_chunk_retries_then_succeeds(client: STTClient, tmp_path) -> 
     chunk.write_bytes(b"fake")
     sleeps: list[float] = []
     with patch(
-        "httpx.Client.post",
+        "httpx.Client.send",
         side_effect=[
             httpx.ReadTimeout("slow"),
             _post_response(503, ""),
@@ -397,7 +426,7 @@ def test_transcribe_chunk_honours_retry_after(client: STTClient, tmp_path) -> No
     sleeps: list[float] = []
     # A Retry-After of 30 s exceeds 2 * cap (16 s), so it is capped.
     with patch(
-        "httpx.Client.post",
+        "httpx.Client.send",
         side_effect=[
             _post_response(429, "", headers={"Retry-After": "30"}),
             _post_response(200, '{"text": "ok"}'),
@@ -419,7 +448,7 @@ def test_transcribe_chunk_gives_up_after_max_retries(client: STTClient, tmp_path
     chunk = tmp_path / "c.mp3"
     chunk.write_bytes(b"fake")
     with (
-        patch("httpx.Client.post", return_value=_post_response(500, "broken")),
+        patch("httpx.Client.send", return_value=_post_response(500, "broken")),
         pytest.raises(SttError, match="failed after 4 attempt") as excinfo,
     ):
         transcribe_chunk(
@@ -434,7 +463,7 @@ def test_transcribe_chunk_401_fails_at_once(client: STTClient, tmp_path) -> None
     sleeps: list[float] = []
     config = _transcribe_config()
     with (
-        patch("httpx.Client.post", return_value=_post_response(401, "bad key")),
+        patch("httpx.Client.send", return_value=_post_response(401, "bad key")),
         pytest.raises(FatalSttError),
     ):
         transcribe_chunk(client, chunk, "c.mp3", config, sleep=sleeps.append)
@@ -457,7 +486,7 @@ def test_transcribe_chunk_stop_event_cancels(client: STTClient, tmp_path) -> Non
         stop["set"] = True  # a sibling chunk failed after this attempt
         return _post_response(500, "broken")
 
-    with patch("httpx.Client.post", side_effect=post), pytest.raises(SttError, match="Stopped"):
+    with patch("httpx.Client.send", side_effect=post), pytest.raises(SttError, match="Stopped"):
         transcribe_chunk(
             client,
             chunk,
@@ -468,3 +497,84 @@ def test_transcribe_chunk_stop_event_cancels(client: STTClient, tmp_path) -> Non
         )
     # One request was made, then the stop event prevented the next attempt.
     assert calls["n"] == 1
+
+
+def test_timeout_retries_use_their_own_smaller_budget(
+    client: STTClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run of timeouts spends only the timeout budget, so the 429/5xx budget
+    is not consumed (a slow server should not burn the retries meant for a
+    busy one), and the chunk fails after the smaller number of attempts."""
+    chunk = tmp_path / "c.mp3"
+    chunk.write_bytes(b"fake")
+    calls = {"n": 0}
+
+    def send(*args: object, **kwargs: object) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("slow")
+
+    config = _transcribe_config(max_retries=3, max_timeout_retries=1)
+    with (
+        patch("httpx.Client.send", side_effect=send),
+        pytest.raises(SttError, match="failed after 2 attempt"),
+    ):
+        transcribe_chunk(client, chunk, "c.mp3", config, sleep=lambda _s: None)
+
+    # 1 initial attempt + 1 timeout retry, not 1 + 3.
+    assert calls["n"] == 2
+
+
+def test_timeouts_and_errors_have_separate_budgets(
+    client: STTClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timeouts and 5xx failures each keep their own budget: the 500 does not
+    spend a retry of the timeout budget, and vice versa."""
+    chunk = tmp_path / "c.mp3"
+    chunk.write_bytes(b"fake")
+    with patch(
+        "httpx.Client.send",
+        side_effect=[
+            httpx.ReadTimeout("slow"),  # timeout 1/1
+            _post_response(500, "broken"),  # 5xx 1/3
+            _post_response(500, "broken"),  # 5xx 2/3
+            _post_response(500, "broken"),  # 5xx 3/3
+            _post_response(200, '{"text": "done"}'),
+        ],
+    ):
+        config = _transcribe_config(max_retries=3, max_timeout_retries=1)
+        reply = transcribe_chunk(
+            client, chunk, "c.mp3", config, sleep=lambda _s: None, rng=random.Random(0)
+        )
+
+    assert reply == {"text": "done"}  # the 500s were retried, not aborted by the timeout
+
+
+def test_transcribe_chunk_interrupt_stops_retries(
+    client: STTClient, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupt signal stops the retries: no request goes out after it,
+    even though the budget is not spent."""
+    import ovox.api as api_mod
+
+    # A fresh shutdown state (the module singleton is shared; monkeypatch
+    # restores it after the test).
+    fresh = api_mod._ShutdownState()
+    monkeypatch.setattr(api_mod, "_shutdown", fresh)
+
+    chunk = tmp_path / "c.mp3"
+    chunk.write_bytes(b"fake")
+    calls = {"n": 0}
+
+    def send(*args: object, **kwargs: object) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            fresh.abort(signal.SIGINT)  # an interrupt arrives after attempt 1
+        return _post_response(500, "broken")
+
+    with (
+        patch("httpx.Client.send", side_effect=send),
+        pytest.raises(SttError, match="interrupted"),
+    ):
+        transcribe_chunk(client, chunk, "c.mp3", _transcribe_config(), sleep=lambda _s: None)
+
+    assert calls["n"] == 1  # the second attempt was not sent

@@ -155,6 +155,7 @@ def configs(
         "max_retries": 0,
         "backoff_base_s": 1.0,
         "backoff_cap_s": 10.0,
+        "max_timeout_retries": 0,
     }
     values.update(transcribe_overrides)
     return (
@@ -217,9 +218,6 @@ def test_transcribe_file_end_to_end(input_file: Path, fakes) -> None:
     text_path = input_file.with_name(f"{STEM}.txt")
     assert result["text_file"] == text_path
     assert text_path.read_text() == "alpha beta gamma delta alpha beta gamma\n"
-    # No segment data was returned, so no segments file.
-    assert result["segments_file"] is None
-    assert not input_file.with_name(f"{STEM}.segments.json").exists()
     assert result["chunks_transcribed"] == 3
     assert result["chunks_total"] == 3
     assert result["resumed"] is False
@@ -237,30 +235,44 @@ def test_transcribe_file_writes_custom_output(input_file: Path, fakes, tmp_path:
     assert not input_file.with_name(f"{STEM}.txt").exists()
 
 
-def test_transcribe_file_writes_segments_when_returned(
-    input_file: Path, fakes, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When the endpoint returns segment data, a global segments JSON is
-    written with each chunk's start time added to the segment times."""
-    import ovox.pipeline as pipeline_mod
+def test_existing_output_is_refused(input_file: Path, fakes, tmp_path: Path) -> None:
+    """A run never overwrites an existing transcript: it fails (before any STT
+    request is sent) and offers deleting the file or choosing another -o path."""
+    out = tmp_path / "notes.txt"
+    out.write_text("something else\n")
 
-    entry0 = fakes.plan.chunks[0]
+    cc, ac, stt, tc = configs()
+    with pytest.raises(WorkdirError, match="already exists"):
+        transcribe_file(
+            input_file,
+            chunk_config=cc,
+            audio_config=ac,
+            stt=stt,
+            transcribe_config=tc,
+            client=fake_client(),
+            output=out,
+        )
+    # The refusal happened before the STT stage: nothing was sent.
+    assert fakes.fake.calls == []
+    # And the file is untouched.
+    assert out.read_text() == "something else\n"
 
-    def with_segments(client, path, chunk_name, config, *, stop_event=None):
-        reply = fakes.fake(client, path, chunk_name, config, stop_event=stop_event)
-        if chunk_name == entry0.name:
-            return {
-                "text": "alpha",
-                "segments": [{"start": 0.5, "end": 1.5, "text": "alpha"}],
-            }
-        return reply
 
-    monkeypatch.setattr(pipeline_mod, "transcribe_chunk", with_segments)
-    result = run_transcribe(input_file, fakes)
+def test_existing_default_output_is_refused(input_file: Path, fakes) -> None:
+    """The default output (next to the input) is refused the same way."""
+    input_file.with_name(f"{STEM}.txt").write_text("an earlier transcript\n")
 
-    assert result["segments_file"] is not None
-    data = json.loads(result["segments_file"].read_text())
-    assert data == [{"start": 0.5, "end": 1.5, "text": "alpha"}]
+    cc, ac, stt, tc = configs()
+    with pytest.raises(WorkdirError, match="already exists"):
+        transcribe_file(
+            input_file,
+            chunk_config=cc,
+            audio_config=ac,
+            stt=stt,
+            transcribe_config=tc,
+            client=fake_client(),
+        )
+    assert fakes.fake.calls == []
 
 
 def test_transcribe_file_reports_progress(input_file: Path, fakes) -> None:
@@ -477,8 +489,10 @@ def test_dry_run_resume_counts_done_chunks(input_file: Path, fakes) -> None:
 
 def test_rerun_of_a_re_recorded_source_starts_fresh(input_file: Path, fakes) -> None:
     """When the source file changes (same name, new content), the stored
-    chunks and transcripts are invalidated: the run re-plans, re-cuts and
-    re-transcribes everything rather than mixing two recordings."""
+    chunks and transcripts are invalidated: the run starts fresh (re-plans,
+    re-cuts, re-transcribes) rather than mixing two recordings — and because
+    the old recording's transcript still exists next to the input, the fresh
+    run refuses to overwrite it until it is gone."""
     run_transcribe(input_file, fakes)
     workdir = default_workdir(input_file)
 
@@ -488,6 +502,28 @@ def test_rerun_of_a_re_recorded_source_starts_fresh(input_file: Path, fakes) -> 
     _time.sleep(0.01)
     input_file.write_bytes(b"other recording, same name")
 
+    fakes.fake.calls.clear()
+    cc, ac, stt, tc = configs()
+    with pytest.raises(WorkdirError, match="already exists"):
+        transcribe_file(
+            input_file,
+            chunk_config=cc,
+            audio_config=ac,
+            stt=stt,
+            transcribe_config=tc,
+            client=fake_client(),
+        )
+    # The run did start fresh before it refused: the stale transcripts were
+    # removed and the chunks were re-cut...
+    assert len(list(workdir.glob("chunk_*.json"))) == 0
+    assert len(list(workdir.glob("*_chunk_*.mp3"))) == 3
+    # ...nothing was sent, and the old transcript is untouched.
+    assert fakes.fake.calls == []
+    assert input_file.with_name(f"{STEM}.txt").exists()
+
+    # Once the old transcript is gone, the fresh run transcribes the new
+    # recording from scratch.
+    input_file.with_name(f"{STEM}.txt").unlink()
     fakes.fake.calls.clear()
     result = run_transcribe(input_file, fakes)
     assert result["chunks_transcribed"] == 3

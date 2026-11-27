@@ -19,7 +19,6 @@ from ovox.pipeline import PipelineError, WorkdirError
 def result_dict(tmp_path: Path) -> dict:
     return {
         "text_file": tmp_path / "meeting.txt",
-        "segments_file": None,
         "chunks_transcribed": 2,
         "chunks_total": 3,
         "resumed": False,
@@ -166,7 +165,6 @@ def test_transcribe_json_output(tmp_path: Path, capsys, monkeypatch: pytest.Monk
     data = json.loads(out)
     assert data["chunks_transcribed"] == 2
     assert data["chunks_total"] == 3
-    assert data["segments_file"] is None
     assert data["timings"]["stt"] == 12.3
 
 
@@ -257,23 +255,75 @@ def test_transcribe_auth_error_points_at_check(
 # --- SIGTERM -----------------------------------------------------------------------
 
 
-def test_sigterm_ends_the_run_with_143(tmp_path: Path, capsys, monkeypatch) -> None:
-    """A SIGTERM is turned into a clean exit (143) so the normal cleanup path
-    runs when the process is killed."""
+@pytest.fixture
+def clean_signals(monkeypatch: pytest.MonkeyPatch):
+    """Restore the process' SIGINT/SIGTERM handlers after a test and reset the
+    shared shutdown state the CLI's handlers act on."""
+    import ovox.api as api_mod
+
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    api_mod._shutdown.reset()
+    yield
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
+    api_mod._shutdown.reset()
+
+
+def test_first_sigterm_with_no_requests_in_flight(
+    tmp_path: Path, capsys, monkeypatch, clean_signals
+) -> None:
+    """With no requests in flight the first SIGTERM behaves like the default
+    handler: its SystemExit(143) unwinds the run immediately, and the CLI
+    reports it as a signal exit."""
     file = input_file(tmp_path)
-    previous_handler = signal.getsignal(signal.SIGTERM)
 
     def fake_transcribe_file(path, **kwargs):
         os.kill(os.getpid(), signal.SIGTERM)
+        # The handler's SystemExit(143) unwinds the run from here.
         raise AssertionError("should not reach this line")
 
     monkeypatch.setattr(pipeline_mod, "transcribe_file", fake_transcribe_file)
 
-    try:
-        rc = main(["transcribe", str(file)])
-        err = capsys.readouterr().err
-    finally:
-        signal.signal(signal.SIGTERM, previous_handler)
+    rc = main(["transcribe", str(file)])
+    err = capsys.readouterr().err
 
     assert rc == 143
     assert "Interrupted (signal)." in err
+
+
+def test_second_interrupt_exits_at_once(
+    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch, clean_signals
+) -> None:
+    """A second interrupt quits at once with the conventional code (143 for
+    SIGTERM), whatever is still running. The first press arrives with a
+    request in flight (the "waiting" path), the second ends the process.
+    ``os._exit`` is faked (raising SystemExit instead of ending the test
+    process); the real exit is covered by the subprocess tests in
+    tests/integration/test_transcribe.py."""
+    import ovox.api as api_mod
+
+    file = input_file(tmp_path)
+    exits: list[int] = []
+
+    def fake_exit(code: int) -> None:
+        exits.append(code)
+        raise SystemExit(code)
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+
+    def fake_transcribe_file(path, **kwargs):
+        api_mod._shutdown.begin()  # a request is in flight
+        os.kill(os.getpid(), signal.SIGTERM)  # first: the "waiting" path
+        api_mod._shutdown.end()
+        os.kill(os.getpid(), signal.SIGTERM)  # second: exit at once
+        raise AssertionError("should not reach this line")
+
+    monkeypatch.setattr(pipeline_mod, "transcribe_file", fake_transcribe_file)
+
+    rc = main(["transcribe", str(file)])
+    err = capsys.readouterr().err
+
+    assert exits == [143]
+    assert rc == 143
+    assert "Interrupted (signal)." in err
+    assert "Waiting for 1 in-flight request(s)" in err

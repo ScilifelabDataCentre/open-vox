@@ -66,11 +66,18 @@ configured model and the duration; `--json` prints the result as JSON.
 
 Each chunk request is retried on transient failures:
 
-- **Retried:** network errors, timeouts, and HTTP 408, 409, 425, 429, 500, 502,
-  503 and 504.
+- **Retried:** network errors, read timeouts, and HTTP 408, 409, 425, 429,
+  500, 502, 503 and 504.
 - **Not retried:** other 4xx errors. 401 and 403 fail immediately with a hint to
   run `ovox check`. Invalid JSON or a missing `text` field also fail
   immediately.
+- **Two retry budgets.** Network errors and retryable statuses get
+  `STT_MAX_RETRIES` retries; read timeouts get `STT_MAX_TIMEOUT_RETRIES`
+  (default 1, vs 5 for the rest). When the read timeout fires, the server may
+  still be working on the chunk — a retry re-sends the same audio while the
+  first attempt may still be running, so ovox spends fewer retries on
+  timeouts than on 429/5xx, and the budgets are separate (a run of timeouts
+  cannot burn the retries a busy endpoint would need, and vice versa).
 - **Backoff:** exponential with full jitter, capped. Jitter spreads retries from
   parallel requests so they do not hit the endpoint at the same moment.
 - **`Retry-After`:** when the server sends it (in seconds), it is used instead of
@@ -91,8 +98,18 @@ of a few requests at a time, configurable).
 - Results are returned in chunk order regardless of completion order.
 - **Fail fast:** the first chunk that fails for good cancels chunks not yet
   started and the whole run fails. A partial transcript with gaps is worse than
-  a clear error in the beta. Resuming or keeping partial results can come later
-  (likely together with server mode).
+  a clear error in the beta.
+- **Interrupts (Ctrl-C, SIGTERM)** stop the run the same way, in two stages.
+  The first interrupt sets a stop flag the stage watches — no chunk not yet
+  started is sent, and no retry goes out — and the run unwinds through the
+  normal error path. A request that is already in flight finishes and its
+  result is kept (a request that times out around the interrupt counts as a
+  timeout, which is retryable on resume); if requests are in flight the CLI
+  prints `Interrupted.` plus how many are still running, and a **second
+  interrupt exits at once** (a short countdown does the same on its own, so
+  the shutdown never waits out the read timeout). The finished chunk results
+  stay on disk (atomic writes), and a later run resumes from them; unfinished
+  chunks are redone.
 - Progress is reported through a callback (chunks done / total), so the CLI can
   show it without the pipeline printing.
 
@@ -105,7 +122,11 @@ Chunk texts are joined in order with a space.
 - After a **hard cut** the next chunk repeats the last `overlap` seconds of
   audio. The merge looks for the longest run of words (up to a small limit) that
   ends the previous text and starts the next one, comparing words in lower case
-  without punctuation, and drops that run from the next text.
+  without punctuation, and drops that run **from the next text** — the previous
+  text is never changed. The next chunk is the one that heard the cut word
+  whole, so its copy is what stays; the previous chunk heard it only in its
+  (possibly clipped) tail. If the previous chunk's last word is garbled by the
+  cut so no run matches, nothing is dropped.
 
 This is a text-only heuristic. It can miss a duplicate if the model transcribes
 the overlap differently in the two chunks, which leaves a repeated word or two.
@@ -113,14 +134,15 @@ Since most cuts land on silence, this is rare.
 
 ### Timestamps are a bonus
 
-The request does not ask for timestamps, so the beta is text-only. But when an
+The request does not ask for timestamps, so the beta is text-only. When an
 endpoint *does* return `segments` (or `words`) in its reply — some hosts do —
-the values are stored in the chunk's result file and a
-`<input>.segments.json` is written next to the transcript, with each chunk's
-start time added to its segment times (a global timeline, in seconds from the
-start of the file). That is what subtitle output (SRT/VTT) will build on.
-Longer term: ask for timestamps to be passed through the gateway, and then
-request them explicitly and drop overlap words by time instead of by matching.
+the values are stored untouched in the chunk's result file, but ovox does not
+yet build a `<input>.segments.json` from them: a timeline made from raw
+segment times would still contain the overlap words the text merge removes,
+and (for Voxtral on vLLM) there is no endpoint to test it against. Segment
+output — and with it subtitles (SRT/VTT) — will come with timestamps: ask for
+them to be passed through the gateway, request them explicitly, and drop
+overlap words by time instead of by matching.
 
 ## The pipeline and the work folder
 
@@ -131,13 +153,18 @@ core, and the CLI is a thin wrapper:
 validate (ovox.media)
   -> plan + cut chunks (ovox.plan, ovox.audio)   into the work folder
   -> transcribe the missing chunks (ovox.api)    bounded concurrency, retries
-  -> merge (ovox.stitch)                          -> <input>.txt (+ .segments.json)
+  -> merge (ovox.stitch)                          -> <input>.txt
 ```
 
 Everything a run needs is kept together in one **work folder** next to the
 input (`.ovox-<stem>-<hash>/`, or `--workdir`): the chunk audio files, the
 manifest (`ovox-chunk-manifest.json`, written once and **never changed
-afterwards**), and one result file per chunk (`chunk_NNN.json`).
+afterwards**), and one result file per chunk (`chunk_NNN.json`). The folder is
+**kept after a successful run** — it is what makes a re-run a free resume (the
+chunks are already cut and the transcripts already sent) — and re-running the
+same command over it reuses it instead of re-cutting. Delete the folder to
+force a fresh cut; it contains only ovox's own files (its name is derived from
+the input, so it is easy to find next to it).
 
 - **Progress is the result files.** A chunk is "done" when its
   `chunk_NNN.json` exists and parses; that file holds the reply, the model and
@@ -156,8 +183,15 @@ afterwards**), and one result file per chunk (`chunk_NNN.json`).
 - **`-o`** chooses the transcript path (default: `<input>.txt` next to the
   input). Progress and the resume note go to **stderr**; stdout carries the
   result (or the plan, `--json`).
-- A `SIGTERM` is turned into a clean exit in the CLI, so temp/work cleanup
-  runs when the process is killed, not only on Ctrl-C.
+- **An existing transcript is not overwritten silently.** A run that starts
+  fresh (no matching work folder) fails before any STT request when the
+  target `.txt` already exists, with a message offering to delete it or pass
+  another `-o`. A run that reuses a matching work folder (a `--resume`, or a
+  plain re-run that picks the folder up) regenerates the transcript that
+  folder produced, so it overwrites it.
+- **Interrupts.** Ctrl-C and SIGTERM stop the run (see Concurrency above):
+  the finished chunks stay resumable, the shutdown is bounded by a short
+  countdown, and a second press exits at once.
 
 ## Open questions
 

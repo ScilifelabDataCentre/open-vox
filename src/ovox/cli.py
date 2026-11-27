@@ -243,7 +243,9 @@ def build_parser() -> argparse.ArgumentParser:
             "is sent with retries, and the results are merged into a .txt transcript "
             "next to the input (or -o). Chunk audio, the manifest and the per-chunk "
             "results are kept in a work folder next to the input, so an interrupted "
-            "run can be resumed with --resume (or simply re-run)."
+            "run can be resumed with --resume (or simply re-run). Ctrl-C stops the "
+            "run: finished chunks are kept for the resume (a second Ctrl-C quits at "
+            "once). An existing transcript is not overwritten; delete it or use -o."
         ),
     )
     transcribe_parser.add_argument("file", metavar="FILE", help="audio or video file to transcribe")
@@ -470,9 +472,6 @@ def print_transcribe_result(result: Mapping[str, Any], *, as_json: bool) -> None
         print(json.dumps(result, indent=2, default=str))
         return
     print(f"Transcript: {result['text_file']}")
-    segments_file = result.get("segments_file")
-    if segments_file is not None:
-        print(f"Segments:   {segments_file}")
     print(
         f"Chunks:   {result['chunks_transcribed']} transcribed this run, "
         f"{result['chunks_total']} total"
@@ -608,23 +607,62 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    # SIGTERM (e.g. from a job manager) is turned into SystemExit so the
-    # cleanup that runs through the normal exit path (work folders, temp
-    # files, in-flight requests) also runs when the process is killed.
-    def _term(signum: int, _frame: Any) -> None:
-        raise SystemExit(143)
+    # SIGINT (Ctrl-C) and SIGTERM (e.g. from a job manager) are handled in two
+    # stages. The first interrupt tells the transcription stage to stop: no
+    # chunk not yet started is sent, and the run unwinds through the normal
+    # error path, so the finished chunks stay resumable. If requests are in
+    # flight they are counted and the user is told how many are still running;
+    # a watchdog quits the process at once if they outlast a short countdown.
+    # A second interrupt always quits at once, immediately. Without requests
+    # in flight the first interrupt behaves like the default handler
+    # (KeyboardInterrupt / SystemExit). Unfinished chunks are redone on
+    # resume.
+    import os as _os
+
+    from ovox.api import _shutdown
+
+    state = {"presses": 0}
+
+    def _interrupt(signum: int, _frame: Any) -> None:
+        state["presses"] += 1
+        if state["presses"] > 1:
+            # Second press: no more waiting. The finished chunk results are
+            # already on disk (atomic writes), so ending hard loses nothing
+            # that a resume would not redo.
+            _os._exit(_shutdown.exit_code())
+            return
+        waiting = _shutdown.abort(signum)
+        if waiting:
+            # Requests are in flight: tell the user what is happening and let
+            # the stage unwind (the exit prints the outcome).
+            print("Interrupted.", file=sys.stderr)
+            print(
+                f"Waiting for {waiting} in-flight request(s) to finish; "
+                "press Ctrl-C again to quit at once. Unfinished chunks "
+                "are redone on resume.",
+                file=sys.stderr,
+            )
+        elif signum == signal.SIGINT:
+            raise KeyboardInterrupt  # the default behaviour
+        else:
+            raise SystemExit(128 + signum)  # the default behaviour
 
     with contextlib.suppress(ValueError, OSError):
-        # Not on the main thread (tests) or the platform has no SIGTERM.
-        signal.signal(signal.SIGTERM, _term)
+        # Not on the main thread (tests) or the platform has no signals.
+        signal.signal(signal.SIGINT, _interrupt)
+        signal.signal(signal.SIGTERM, _interrupt)
 
     try:
         result: int = handler(args)
     except KeyboardInterrupt:
+        # The interrupt landed with no requests in flight (the default
+        # behaviour), in the local steps, or the handler caught it itself.
         print("Interrupted.", file=sys.stderr)
         return 130
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
+        if code not in (130, 143):
+            raise
         print("Interrupted (signal).", file=sys.stderr)
         return code
     return result
