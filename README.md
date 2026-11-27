@@ -139,6 +139,18 @@ Then run:
 OVOX_TEST_MEDIA_DIR=~/media pytest -m local_media -v
 ```
 
+The live tests transcribe the committed short speech clips (and, with
+`OVOX_TEST_MEDIA_DIR`, your own files) with the real STT endpoint configured
+in `.env`, and check the transcript against the committed expected `.txt`.
+They are excluded from the default run because they cost real API calls;
+run `ovox check` first, then:
+```bash
+pytest -m live                                  # real transcription of the committed files
+OVOX_TEST_MEDIA_DIR=~/media pytest -m "live and local_media"   # your own long files
+```
+A local file is picked up only when it has a sibling `.txt` with the same
+name and the expected transcript in it.
+
 ## Usage
 
 The first usage of open-vox is as a CLI.

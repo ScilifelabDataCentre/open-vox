@@ -47,6 +47,11 @@ real silence detection gives usable cut points.
 
 ### Test media is generated, not committed
 
+The one exception: `tests/data/audio/` holds one or two short committed
+speech clips (a few seconds, well under 500 kB, public-domain or own
+recording) with a sibling `.txt` holding the expected transcript. They are
+the fixtures the `live` tests below check against.
+
 A session-scoped `media_dir` fixture in `tests/integration/conftest.py` creates
 all media with ffmpeg's built-in sources (`sine`, `aevalsrc`, `testsrc`) through
 one helper, `_media`. Each file is described by its parts, for example:
@@ -69,8 +74,30 @@ itself, keeping the last few runs.
 ### Real recordings (optional)
 
 Tests that need real recordings (for example speech, unusual codecs) are skipped
-unless `OVOX_TEST_MEDIA_DIR` points to a folder of media files. Real recordings
-are not committed, for size and licensing reasons.
+unless `OVOX_TEST_MEDIA_DIR` points to a folder of media files. Long or private
+recordings are not committed, for size and licensing reasons.
+
+Two kinds of tests use real recordings:
+
+- **`local_media`** (no endpoint): every media file under
+  `$OVOX_TEST_MEDIA_DIR` is probed and must contain an audio stream
+  (`tests/integration/test_media.py`). Run with
+  `OVOX_TEST_MEDIA_DIR=./tests/data pytest -m local_media`.
+- **`live`** (real STT endpoint): `tests/integration/test_live_transcribe.py`
+  transcribes the committed short speech clips with the endpoint and key from
+  the environment or `.env`, and checks the transcript against the committed
+  expected `.txt` (word-based, so punctuation or case differences are fine).
+  With `$OVOX_TEST_MEDIA_DIR` set it also transcribes your own files — the
+  closest thing to a full test of real use — but only files that have a
+  sibling `.txt` with the expected transcript:
+
+  ```bash
+  pytest -m live                                        # committed clips
+  OVOX_TEST_MEDIA_DIR=~/media pytest -m "live and local_media"
+  ```
+
+  These cost real API calls, so the marker is excluded from the default run
+  (`-m "not live"` in `addopts`, pyproject.toml); CI never runs them.
 
 ### The STT endpoint
 

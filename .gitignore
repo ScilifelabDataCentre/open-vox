@@ -16,8 +16,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Data directories  
-data/
+# Models directories  
 models/
 
 # Docker volumes

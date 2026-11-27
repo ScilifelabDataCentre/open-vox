@@ -53,11 +53,15 @@ include = ["src/ovox", "tests", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+# live tests call the real STT endpoint (needs a valid key), so the default
+# run excludes them. addopts come before the command line, so a `pytest -m
+# live` there overrides this selection.
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib -m 'not live'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "asyncio: mark the test as asynchronous",
+    "live: calls the real STT endpoint with the configured key (excluded by default; run `pytest -m live`)",
     "local_media: runs against files in $OVOX_TEST_MEDIA_DIR (skipped if unset)",
 ]
 

@@ -36,6 +36,10 @@ retries/backoff, bounded concurrency, a work folder for resume, word-matching
 merge of hard-cut overlaps, and text-only output (segments JSON when the
 endpoint returns segments). All have unit and integration tests; the STT
 endpoint is faked with a local `http.server` in the integration tests.
+Live end-to-end tests (`pytest -m live`, excluded from the default run)
+transcribe the committed speech clip in `tests/data/audio/` against the real
+endpoint and check it against the expected `.txt`; with `OVOX_TEST_MEDIA_DIR`
+set they cover your own files too (`pytest -m "live and local_media"`).
 
 **Config and API-key check**: load settings from `.env` and the environment.
    Add a command (`ovox check`) that makes a cheap authenticated
@@ -127,9 +131,13 @@ Make room for a later upload time limit. Keep the limits together as a per-targe
 Suggested order:
 Next in line:
 
-Design integration test with real audio files.
-a. Committed files: to test actual transcription, commit one or two short speech clips, a few seconds each (max 500kb each). Put them in tests/data/ and use public-domain (CC0) audio or  own recording.
-b. Local folder: set an environment variable at the folder and skip when it’s unset, so CI is not affected.
+**Integration test with real audio files (done)**: the `live` marker
+(`tests/integration/test_live_transcribe.py`, excluded from the default run,
+`pytest -m live`) transcribes the committed short speech clip in
+`tests/data/audio/` (mp3 + expected `.txt`) against the real endpoint and
+checks the transcript word-based. With `OVOX_TEST_MEDIA_DIR` set,
+`pytest -m "live and local_media"` does the same for your own files (a media
+file counts when it has a sibling `.txt` with the expected transcript).
 
 6. **Stitching**: merge chunk results, offset timestamps and de-duplicate the overlaps.
 7. **Output formats**: `txt`, `srt`, `vtt`, `json`.
