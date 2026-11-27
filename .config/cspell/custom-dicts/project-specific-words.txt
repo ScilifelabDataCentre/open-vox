@@ -5,20 +5,30 @@
 # 
 # One word per line, in alphabetical order.
 # ---
+autojunk
+behavior
 Berserkers
 Berzelius
 Bitwarden
 citability
+dedupe
 Distributables
 Dockerfiles
+downmixes
+excinfo
+ffprobe
 Figshare
 jsquery
 Kivy
+KMGTPE
+lavfi
+libmp
 logfmt
 lycheecache
 lycheeignore
 mdlint
 Miarka
+mismerging
 MSBFS
 nerdctl
 ovox
@@ -30,6 +40,12 @@ prek
 RACI
 RORID
 sarif
+silencedetect
+skipif
 trivy
+unparsable
+untranscribed
+voxtral
+Voxtral
 Zenodo
 ZSON

@@ -1,0 +1,201 @@
+# Transcription: STT endpoint, retries, merging and the pipeline
+
+Status: current for the first beta. Last updated 2026-11.
+
+This covers sending chunks to the speech-to-text (STT) endpoint and turning the
+results into one transcript. See the [audio pipeline](audio-pipeline.md) for how
+chunks are made.
+
+## Endpoint contract
+
+ovox targets an **OpenAI-compatible transcription endpoint**
+(`POST .../audio/transcriptions`):
+
+- multipart form upload with just `file` and `model` — ovox deliberately
+  sends a **plain request**, with no `response_format=verbose_json` or
+  `timestamp_granularities[]`. Voxtral on vLLM does not provide timestamps,
+  and Open WebUI silently drops options its model does not support, so asking
+  for them would only make the result depend on the gateway's behaviour. The
+  beta is text-only for that reason;
+- bearer-token authentication;
+- JSON response with a `text` field. Whatever extra fields the endpoint does
+  return (`segments`, `words`, a speaker field, ...) are stored untouched in
+  the chunk's result file and used when present (see below).
+
+Why: this API shape is supported by OpenAI, many hosted providers, and
+self-hosted servers for Whisper-style and custom models. Targeting it lets users
+switch between hosted and their own models by changing the URL, model name and
+key, which is the core of "custom transcription models".
+
+Everything endpoint-specific lives in one function (`STTClient.transcribe_file`)
+that sends a single request. Supporting a different API later means replacing
+that function, not the retry, concurrency or merge logic.
+
+The multipart upload is built with `httpx` (a small, pinned dependency for
+HTTP; see "No runtime Python dependencies" in the
+[overview](overview.md)).
+
+## Checking the configuration
+
+`ovox check` makes one cheap authenticated call to the endpoint and reports OK
+or a clear failure (bad key, wrong URL, endpoint down). Users run it before long
+jobs; transcription errors caused by authentication point back to it.
+
+The check is a `GET` of the model list (`.../models`), derived from the
+configured `STT_ENDPOINT` by replacing the `/audio/transcriptions` path. It is
+sent with the same bearer key, so it also catches a bad key.
+
+A success requires a 2xx response **and** a JSON body. A 2xx with a non-JSON
+body is a failure (`error: unexpected_response`), not a success: gateways in
+front of STT servers (for example Open WebUI) answer *any* unknown URL with 200
+and a web page, so a wrong `STT_ENDPOINT` would otherwise look healthy.
+
+The result always includes the configured `endpoint` and `model` and the call's
+`duration_ms`, so failures are debuggable without re-running with more logging.
+`status_code` is `null` when no HTTP response was received (the connection
+failed or timed out). On failure, `error` is a short stable type that scripts
+can match on instead of message text: `connection_error`, `timeout`,
+`unauthorized`, `not_found`, `http_error` (any other 4xx/5xx) or
+`unexpected_response`.
+
+The exit code is the contract: 0 on success, non-zero on failure. Plain text
+output shows the outcome, the error type (on failure), the endpoint, the
+configured model and the duration; `--json` prints the result as JSON.
+
+## Retries and backoff
+
+Each chunk request is retried on transient failures:
+
+- **Retried:** network errors, read timeouts, and HTTP 408, 409, 425, 429,
+  500, 502, 503 and 504.
+- **Not retried:** other 4xx errors. 401 and 403 fail immediately with a hint to
+  run `ovox check`. Invalid JSON or a missing `text` field also fail
+  immediately.
+- **Two retry budgets.** Network errors and retryable statuses get
+  `STT_MAX_RETRIES` retries; read timeouts get `STT_MAX_TIMEOUT_RETRIES`
+  (default 1, vs 5 for the rest). When the read timeout fires, the server may
+  still be working on the chunk — a retry re-sends the same audio while the
+  first attempt may still be running, so ovox spends fewer retries on
+  timeouts than on 429/5xx, and the budgets are separate (a run of timeouts
+  cannot burn the retries a busy endpoint would need, and vice versa).
+- **Backoff:** exponential with full jitter, capped. Jitter spreads retries from
+  parallel requests so they do not hit the endpoint at the same moment.
+- **`Retry-After`:** when the server sends it (in seconds), it is used instead of
+  the computed delay, capped to a sensible maximum.
+- After the last attempt the chunk fails with a message naming the chunk and the
+  last error.
+
+Retry count, timeouts and backoff limits are settings with defaults in code.
+
+## Concurrency
+
+Chunks are transcribed in parallel with a bounded thread pool (a small default
+of a few requests at a time, configurable).
+
+- Threads rather than asyncio: the work is waiting on HTTP, the standard
+  library's HTTP client is synchronous, and a thread pool keeps the code simple.
+- The bound protects the endpoint and the user's rate limits.
+- Results are returned in chunk order regardless of completion order.
+- **Fail fast:** the first chunk that fails for good cancels chunks not yet
+  started and the whole run fails. A partial transcript with gaps is worse than
+  a clear error in the beta.
+- **Interrupts (Ctrl-C, SIGTERM)** stop the run the same way, in two stages.
+  The first interrupt sets a stop flag the stage watches — no chunk not yet
+  started is sent, and no retry goes out — and the run unwinds through the
+  normal error path. A request that is already in flight finishes and its
+  result is kept (a request that times out around the interrupt counts as a
+  timeout, which is retryable on resume); if requests are in flight the CLI
+  prints `Interrupted.` plus how many are still running, and a **second
+  interrupt exits at once** (a short countdown does the same on its own, so
+  the shutdown never waits out the read timeout). The finished chunk results
+  stay on disk (atomic writes), and a later run resumes from them; unfinished
+  chunks are redone.
+- Progress is reported through a callback (chunks done / total), so the CLI can
+  show it without the pipeline printing.
+
+## Merging chunk texts
+
+Chunk texts are joined in order with a space.
+
+- After a **silence cut** (`overlap_before == 0`) nothing is repeated, so texts
+  are joined as they are.
+- After a **hard cut** the next chunk repeats the last `overlap` seconds of
+  audio. The merge looks for the longest run of words (up to a small limit) that
+  ends the previous text and starts the next one, comparing words in lower case
+  without punctuation, and drops that run **from the next text** — the previous
+  text is never changed. The next chunk is the one that heard the cut word
+  whole, so its copy is what stays; the previous chunk heard it only in its
+  (possibly clipped) tail. If the previous chunk's last word is garbled by the
+  cut so no run matches, nothing is dropped.
+
+This is a text-only heuristic. It can miss a duplicate if the model transcribes
+the overlap differently in the two chunks, which leaves a repeated word or two.
+Since most cuts land on silence, this is rare.
+
+### Timestamps are a bonus
+
+The request does not ask for timestamps, so the beta is text-only. When an
+endpoint *does* return `segments` (or `words`) in its reply — some hosts do —
+the values are stored untouched in the chunk's result file, but ovox does not
+yet build a `<input>.segments.json` from them: a timeline made from raw
+segment times would still contain the overlap words the text merge removes,
+and (for Voxtral on vLLM) there is no endpoint to test it against. Segment
+output — and with it subtitles (SRT/VTT) — will come with timestamps: ask for
+them to be passed through the gateway, request them explicitly, and drop
+overlap words by time instead of by matching.
+
+## The pipeline and the work folder
+
+`ovox transcribe` (see `ovox.pipeline.transcribe_file`) is the direct-mode
+core, and the CLI is a thin wrapper:
+
+```
+validate (ovox.media)
+  -> plan + cut chunks (ovox.plan, ovox.audio)   into the work folder
+  -> transcribe the missing chunks (ovox.api)    bounded concurrency, retries
+  -> merge (ovox.stitch)                          -> <input>.txt
+```
+
+Everything a run needs is kept together in one **work folder** next to the
+input (`.ovox-<stem>-<hash>/`, or `--workdir`): the chunk audio files, the
+manifest (`ovox-chunk-manifest.json`, written once and **never changed
+afterwards**), and one result file per chunk (`chunk_NNN.json`). The folder is
+**kept after a successful run** — it is what makes a re-run a free resume (the
+chunks are already cut and the transcripts already sent) — and re-running the
+same command over it reuses it instead of re-cutting. Delete the folder to
+force a fresh cut; it contains only ovox's own files (its name is derived from
+the input, so it is easy to find next to it).
+
+- **Progress is the result files.** A chunk is "done" when its
+  `chunk_NNN.json` exists and parses; that file holds the reply, the model and
+  endpoint it was asked with, written via `.tmp` + atomic rename so a kill can
+  never leave a half-written file behind.
+- **Resume** is "read the manifest, check the source and the settings match,
+  transcribe the chunks without a result file". `--resume` states it
+  explicitly (and skips re-planning); an ordinary re-run of the same command
+  also picks the folder up. A mismatch (different file, or changed limits /
+  upload format / model) fails with a message telling the user to delete the
+  work folder.
+- **`--dry-run`** runs all the local stages (validate, plan, cut) into the
+  work folder and prints the plan — chunk count and lengths, and how many are
+  already transcribed — but makes no STT requests. A later real run resumes
+  from it.
+- **`-o`** chooses the transcript path (default: `<input>.txt` next to the
+  input). Progress and the resume note go to **stderr**; stdout carries the
+  result (or the plan, `--json`).
+- **An existing transcript is not overwritten silently.** A run that starts
+  fresh (no matching work folder) fails before any STT request when the
+  target `.txt` already exists, with a message offering to delete it or pass
+  another `-o`. A run that reuses a matching work folder (a `--resume`, or a
+  plain re-run that picks the folder up) regenerates the transcript that
+  folder produced, so it overwrites it.
+- **Interrupts.** Ctrl-C and SIGTERM stop the run (see Concurrency above):
+  the finished chunks stay resumable, the shutdown is bounded by a short
+  countdown, and a second press exits at once.
+
+## Open questions
+
+- Language: pass the user's choice through, or rely on the model's detection
+  for each chunk? Per-chunk detection can disagree between chunks.
+- Prompting the model with the end of the previous chunk's text (supported by
+  some endpoints) could improve continuity, but forces chunks to run in order.

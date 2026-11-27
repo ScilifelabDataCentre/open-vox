@@ -1,0 +1,3 @@
+The objective is to investigate the extent to which machine learning methods
+can be used to guide human experts in optimising timing decisions for dispatching of
+resources for winter road maintenance, by learning from historical call-out decisions.

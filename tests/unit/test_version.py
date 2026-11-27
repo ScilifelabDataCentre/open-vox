@@ -12,7 +12,7 @@ import pytest
 import ovox
 from ovox.cli import main
 
-PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 # Simplified PEP 440: release segment plus optional pre/post/dev suffixes.
 PEP440 = re.compile(r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?$")
